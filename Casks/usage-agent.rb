@@ -1,6 +1,6 @@
 cask "usage-agent" do
-  version "0.1.0"
-  sha256 "f951ce14beb4d83fbd969b27c34f5fcfdef207c49ab9f1e855d4239dac6a13af"
+  version "0.2.0"
+  sha256 "e31cb353bc013d3b7c2c3d074b11f0293458330a8b6838afd63d11650430d112"
 
   url "https://github.com/centralhardware/usageStatServer/releases/download/agent-v#{version}/usage-agent-#{version}.dmg"
   name "usage-agent"
