@@ -2,7 +2,7 @@
 //! and POSTs the blocks to UsageStatServer. Runs resident as a per-user LaunchAgent (see
 //! packaging/): it needs the user's GUI session to see the frontmost app.
 //!
-//! Every 2 s it samples the frontmost app (NSWorkspace), the focused window's title
+//! Every second it samples the frontmost app (NSWorkspace), the focused window's title
 //! (Accessibility, asked for on first run; titles stay empty until granted), input idle time
 //! and the lock state; tracker.rs turns that into blocks. Every 60 s it sends the queued
 //! blocks plus the open one (re-sent with a later stop each time).
@@ -34,7 +34,7 @@ fn main() -> ExitCode {
     use usage_agent::tracker::{MediaTracker, Observation, SLEEP_GAP_MS, Tracker};
 
     const ENDPOINT: &str = "/api/usage";
-    const TICK: Duration = Duration::from_secs(2);
+    const TICK: Duration = Duration::from_secs(1);
     const FLUSH_EVERY: Duration = Duration::from_secs(60);
     /// Media is sampled less often: finding the tab's domain runs osascript.
     const MEDIA_EVERY: Duration = Duration::from_secs(10);

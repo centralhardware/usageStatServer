@@ -1,6 +1,6 @@
 # usage-agent
 
-A macOS LaunchAgent (per user: it needs the GUI session) that every 2 seconds samples the
+A macOS LaunchAgent (per user: it needs the GUI session) that every second samples the
 frontmost app, its focused window's title, input idle time and the lock state, turns that into
 blocks and posts them to `POST /api/usage` every minute. It stays resident (launchd `KeepAlive`).
 
