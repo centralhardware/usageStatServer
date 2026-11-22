@@ -53,6 +53,11 @@ pub struct MediaBlock {
     /// The app playing it.
     pub bundle_id: String,
     pub app_name: String,
+    /// From macOS Now Playing: the media's title and artist/channel; empty when unknown.
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
     /// Unix milliseconds.
     pub start_at: i64,
     pub stop_at: i64,
@@ -64,6 +69,9 @@ impl MediaBlock {
             if v.is_empty() || v.chars().count() > 256 {
                 return Some(format!("media {name} must be 1-256 characters"));
             }
+        }
+        if self.title.chars().count() > 1024 || self.artist.chars().count() > 1024 {
+            return Some("media title and artist must be at most 1024 characters".into());
         }
         if self.stop_at < self.start_at || self.stop_at - self.start_at > 24 * 3600 * 1000 {
             return Some("media block must run forward and last at most 24 hours".into());

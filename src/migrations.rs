@@ -11,6 +11,7 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (3, "create_mac_media_table", include_str!("../migrations/V3__create_mac_media_table.sql")),
     (4, "add_domain_and_app_category", include_str!("../migrations/V4__add_domain_and_app_category.sql")),
     (5, "create_activity_rules_table", include_str!("../migrations/V5__create_activity_rules_table.sql")),
+    (6, "add_media_title", include_str!("../migrations/V6__add_media_title.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]

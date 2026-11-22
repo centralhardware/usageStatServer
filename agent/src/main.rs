@@ -46,6 +46,13 @@ fn main() -> ExitCode {
         locked: mac::screen_locked(),
     };
 
+    if std::env::args().any(|a| a == "--dump-now-playing") {
+        match mac::now_playing() {
+            Some(n) => println!("bundle={} playing={:?} title={:?} artist={:?}", n.bundle, n.playing, n.title, n.artist),
+            None => println!("Now Playing: nothing (or macOS refused)"),
+        }
+        return ExitCode::SUCCESS;
+    }
     if std::env::args().any(|a| a == "--dry-run") {
         mac::pump_run_loop(Duration::from_millis(100));
         let o = observe();

@@ -154,6 +154,9 @@ pub struct Playing {
     pub app_name: String,
     /// The browser tab's domain, else the app's name.
     pub source: String,
+    /// From Now Playing, when macOS hands it out.
+    pub title: String,
+    pub artist: String,
 }
 
 /// Turns "what plays video now" samples into media blocks: a block runs while the same
@@ -193,12 +196,13 @@ impl MediaTracker {
         self.last_tick = Some(now);
         match (playing, &self.current) {
             (None, _) => self.close(now, &mut out),
-            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source => {}
+            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source && p.title == b.title => {}
             (Some(p), _) => {
                 self.close(now, &mut out);
                 self.current = Some(MediaBlock {
                     device_id: self.device.clone(), device_name: self.device_name.clone(), source: p.source.clone(),
-                    bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), start_at: now, stop_at: now,
+                    bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), title: p.title.clone(),
+                    artist: p.artist.clone(), start_at: now, stop_at: now,
                 });
             }
         }
@@ -226,6 +230,16 @@ pub fn webkit_media_owner(name: &str) -> Option<String> {
     let parts: Vec<&str> = id.split('.').collect();
     let keep = parts.iter().rposition(|p| !p.chars().all(|c| c.is_ascii_digit()))? + 1;
     Some(parts[..keep].join("."))
+}
+
+/// The tab playing `title`: the first tab (url, tab title) whose title contains it, ignoring case.
+/// YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
+pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str) -> Option<&'a str> {
+    let t = title.trim().to_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+    tabs.iter().find(|(_, name)| name.to_lowercase().contains(&t)).map(|(url, _)| url.as_str())
 }
 
 /// The host of a URL without "www.", e.g. "https://www.youtube.com/watch?v=x" → "youtube.com".
@@ -317,7 +331,7 @@ mod tests {
     #[test]
     fn media_blocks_follow_source() {
         let mut m = MediaTracker::new("uuid", "mac");
-        let yt = Playing { bundle_id: "com.apple.Safari".into(), app_name: "Safari".into(), source: "youtube.com".into() };
+        let yt = Playing { bundle_id: "com.apple.Safari".into(), app_name: "Safari".into(), source: "youtube.com".into(), ..Default::default() };
         let nf = Playing { source: "netflix.com".into(), ..yt.clone() };
         assert!(m.tick(0, Some(&yt), 30_000).is_empty());
         assert!(m.tick(10_000, Some(&yt), 30_000).is_empty());
@@ -326,6 +340,17 @@ mod tests {
         let out = m.tick(30_000, None, 30_000);
         assert_eq!((out[0].source.as_str(), out[0].stop_at), ("netflix.com", 30_000));
         assert!(m.current().is_none());
+    }
+
+    #[test]
+    fn matches_playing_tab() {
+        let tabs = vec![
+            ("https://github.com/x".to_string(), "centralhardware/usageStatServer".to_string()),
+            ("https://www.youtube.com/watch?v=1".to_string(), "Clear as mud!! Come see me - YouTube".to_string()),
+        ];
+        assert_eq!(tab_playing(&tabs, "clear as mud!! come see me"), Some("https://www.youtube.com/watch?v=1"));
+        assert_eq!(tab_playing(&tabs, "something else"), None);
+        assert_eq!(tab_playing(&tabs, " "), None);
     }
 
     #[test]

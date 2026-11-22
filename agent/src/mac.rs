@@ -198,6 +198,7 @@ fn tab_domain(bundle_id: &str) -> Option<String> {
 /// browser's own helper processes take the assertion, so a pid is mapped to its app bundle.
 pub fn playing() -> Option<Playing> {
     use objc2_app_kit::NSRunningApplication;
+    let np = now_playing();
     for (pid, owner) in media_assertions() {
         let app = match &owner {
             Some(b) => NSRunningApplication::runningApplicationsWithBundleIdentifier(&objc2_foundation::NSString::from_str(b)).firstObject(),
@@ -208,10 +209,28 @@ pub fn playing() -> Option<Playing> {
         // Helper processes (com.google.Chrome.helper…) belong to their browser.
         let bundle = tab_url_script_owner(&bundle).unwrap_or(bundle);
         let name = app.localizedName().map_or_else(|| bundle.clone(), |n| n.to_string());
-        let source = tab_domain(&bundle).unwrap_or_else(|| name.clone());
-        return Some(Playing { bundle_id: bundle, app_name: name, source });
+        // Now Playing names the media when it belongs to this app; then the tab showing that
+        // title is the one playing. Otherwise fall back to the tab in front when playback began.
+        let (title, artist) = np.as_ref().filter(|n| n.bundle == bundle).map(|n| (n.title.clone(), n.artist.clone())).unwrap_or_default();
+        let source = tab_with_title(&bundle, &title)
+            .or_else(|| playing_source(&bundle))
+            .unwrap_or_else(|| name.clone());
+        return Some(Playing { bundle_id: bundle, app_name: name, source, title, artist });
     }
+    PLAYING_SOURCE.with_borrow_mut(|v| *v = None);
     None
+}
+
+/// The playing tab's domain. Browsers don't say which tab plays, so it is the front tab when
+/// playback starts, kept for as long as that app keeps playing: switching to another tab while
+/// a video plays on doesn't move the source. Retried until a domain is found.
+fn playing_source(bundle: &str) -> Option<String> {
+    if let Some(src) = PLAYING_SOURCE.with_borrow(|v| v.as_ref().filter(|(b, _)| b == bundle).map(|(_, s)| s.clone())) {
+        return Some(src);
+    }
+    let src = tab_domain(bundle)?;
+    PLAYING_SOURCE.with_borrow_mut(|v| *v = Some((bundle.to_owned(), src.clone())));
+    Some(src)
 }
 
 /// The browser a helper process belongs to, from its bundle id prefix.
@@ -223,6 +242,7 @@ fn tab_url_script_owner(bundle: &str) -> Option<String> {
 }
 
 thread_local! {
+    static PLAYING_SOURCE: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
     static CATEGORIES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
     static LAST_DOMAIN: std::cell::RefCell<(String, String, String, bool)> = Default::default();
 }
@@ -259,4 +279,49 @@ fn front_domain(bundle_id: &str, title: &str) -> String {
         *v = (bundle_id.to_owned(), title.to_owned(), d.clone(), confirmed);
     });
     d
+}
+
+/// What macOS Now Playing reports (via the media-remote crate's JavaScript-for-Automation path,
+/// which works past the macOS 15.4 MediaRemote entitlement check).
+pub struct NowPlaying {
+    pub bundle: String,
+    pub title: String,
+    pub artist: String,
+    pub playing: Option<bool>,
+}
+
+pub fn now_playing() -> Option<NowPlaying> {
+    let i = media_remote::get_info()?;
+    Some(NowPlaying {
+        bundle: i.bundle_id.unwrap_or_default(),
+        title: i.title.unwrap_or_default(),
+        artist: i.artist.unwrap_or_default(),
+        playing: i.is_playing,
+    })
+}
+
+/// Every tab of a browser as (url, title), via AppleScript.
+fn tabs(bundle_id: &str) -> Vec<(String, String)> {
+    let title = match tab_url_script(bundle_id) {
+        Some(s) if s.contains("current tab") => "name",
+        Some(_) => "title",
+        None => return Vec::new(),
+    };
+    let script = format!(
+        "set out to \"\"\ntell application id \"{bundle_id}\"\nrepeat with w in windows\nrepeat with t in tabs of w\n\
+         set out to out & (URL of t) & tab & ({title} of t) & linefeed\nend repeat\nend repeat\nend tell\nreturn out"
+    );
+    let Ok(out) = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).output() else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('\t').map(|(u, t)| (u.to_owned(), t.to_owned())))
+        .collect()
+}
+
+fn tab_with_title(bundle_id: &str, title: &str) -> Option<String> {
+    if title.is_empty() {
+        return None;
+    }
+    let tabs = tabs(bundle_id);
+    usage_agent::tracker::tab_playing(&tabs, title).and_then(usage_agent::tracker::domain)
 }
