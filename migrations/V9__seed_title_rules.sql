@@ -20,8 +20,8 @@ INSERT INTO title_rules (bundle_id, pattern, priority) VALUES
     -- GitHub: Commits · owner/repo, usageStatServer/Casks at main · owner/repo → page, repo
     ('com.apple.Safari', '^(?P<subject>.+) · (?P<context>[\\w.-]+/[\\w.-]+)$', 52),
     ('com.google.Chrome', '^(?P<subject>.+) · (?P<context>[\\w.-]+/[\\w.-]+)$', 52),
-    -- <page> - YouTube, <page> | Pangear, <page> — PeakHour → page, site (the last separator)
-    ('com.apple.Safari', '^(?P<subject>.+)(?: - | \\| | — )(?P<context>[^|—]+?)$', 100),
-    ('com.google.Chrome', '^(?P<subject>.+)(?: - | \\| | — )(?P<context>[^|—]+?)$', 100),
+    -- <page> - YouTube, <page> | Pangear, <page> — PeakHour, <post> : r/macsysadmin → page, site (the last separator)
+    ('com.apple.Safari', '^(?P<subject>.+)(?: - | \\| | — | : )(?P<context>[^|—]+?)$', 100),
+    ('com.google.Chrome', '^(?P<subject>.+)(?: - | \\| | — | : )(?P<context>[^|—]+?)$', 100),
     -- processed — iCloud – 0 messages → mailbox, account; message count
     ('com.apple.mail', '^(?P<subject>.+?) — (?P<context>.+?)(?: – (?P<messages>\\d+) messages?)?$', 100);

@@ -174,6 +174,7 @@ mod tests {
         assert_eq!(p(S, "Commits · centralhardware/usageStatServer"), pair("Commits", "centralhardware/usageStatServer"));
         assert_eq!(p(S, "Виброс — контактный микрофон | Pangear"), pair("Виброс — контактный микрофон", "Pangear"));
         assert_eq!(p(S, "track you mac usage - Google Search"), pair("track you mac usage", "Google Search"));
+        assert_eq!(p(S, "Tool to track computer/app usage? : r/macsysadmin"), pair("Tool to track computer/app usage?", "r/macsysadmin"));
         assert_eq!(p(S, "Messages - Telegram - Dashboards - Grafana"), pair("Messages - Telegram - Dashboards", "Grafana"));
         assert_eq!(f("com.apple.mail", "processed — iCloud – 0 messages"), kv(&[("messages", "0")]));
     }
