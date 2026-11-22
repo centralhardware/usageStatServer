@@ -17,23 +17,6 @@ impl Rule {
     }
 }
 
-/// Rules written into an empty `title_rules` on first start, for the apps seen so far.
-/// They are data from then on: edit the table, not this list.
-pub const SEED: &[(&str, &str)] = &[
-    // dotclaude – mac_usage [default@10.168.0.32] → project, file/tab (the [connection] dropped)
-    ("com.jetbrains.intellij", r"^(?P<context>.+?) – (?P<subject>.+?)(?: \[[^\]]*\])?$"),
-    // root — [coolify] lazydocker ~ — ssh root@10.168.0.77 → user — tab/dir — command
-    ("com.apple.Terminal", r"^[^—]+ — (?P<context>.+?) — (?P<subject>[^—]+)$"),
-    // Прочиточная @ central hardware → chat, account
-    ("com.tdesktop.Telegram", r"^(?P<subject>.+?) @ (?P<context>.+)$"),
-    ("ru.keepcoder.Telegram", r"^(?P<subject>.+?) @ (?P<context>.+)$"),
-    // <page> - YouTube → page, site (the last " - " part)
-    ("com.apple.Safari", r"^(?P<subject>.+) - (?P<context>[^-]+)$"),
-    ("com.google.Chrome", r"^(?P<subject>.+) - (?P<context>[^-]+)$"),
-    // processed — iCloud – 0 messages → mailbox, account
-    ("com.apple.mail", r"^(?P<subject>.+?) — (?P<context>.+?)(?: – \d+ messages?)?$"),
-];
-
 /// The title without invisible marks (bidi isolates, zero-width), a trailing unread counter (1–3 digits)
 /// "(3)" or a terminal size "— 207×59", so one chat or file doesn't split into several titles.
 pub fn clean(title: &str) -> String {
@@ -76,31 +59,65 @@ fn split(title: &str) -> (String, String) {
     (title.to_owned(), String::new())
 }
 
-/// (subject, context) of a title. `rules` must be sorted by priority.
-pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> (String, String) {
+/// What a title says: `subject`, `context`, and any other named groups of the matching rule.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Parsed {
+    pub subject: String,
+    pub context: String,
+    pub fields: Vec<(String, String)>,
+}
+
+/// Parses a title. `rules` must be sorted by priority.
+pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> Parsed {
     let t = clean(title);
     if t.is_empty() {
-        return Default::default();
+        return Parsed::default();
     }
     for r in rules.iter().filter(|r| r.bundle_id.is_empty() || r.bundle_id == bundle_id) {
         if let Some(c) = r.regex.captures(&t) {
-            let get = |n| c.name(n).map(|m| m.as_str().trim().to_owned()).unwrap_or_default();
-            return (get("subject"), get("context"));
+            let mut p = Parsed::default();
+            for name in r.regex.capture_names().flatten() {
+                let Some(m) = c.name(name) else { continue };
+                let v = m.as_str().trim().to_owned();
+                match name {
+                    "subject" => p.subject = v,
+                    "context" => p.context = v,
+                    _ if !v.is_empty() => p.fields.push((name.to_owned(), v)),
+                    _ => {}
+                }
+            }
+            return p;
         }
     }
-    split(&t)
+    let (subject, context) = split(&t);
+    Parsed { subject, context, fields: Vec::new() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The rules V9 inserts, read from the migration itself: ('bundle', 'pattern') tuples with
+    /// ClickHouse string escaping (\\ → \\ in the regex).
     fn seed() -> Vec<Rule> {
-        SEED.iter().map(|(b, p)| Rule::new(b, p, 100).unwrap()).collect()
+        let sql = include_str!("../migrations/V9__seed_title_rules.sql");
+        let rules: Vec<Rule> = sql
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("('"))
+            .map(|l| {
+                let l = l.trim_end_matches([',', ';']).trim_start_matches("('").trim_end_matches("')");
+                let (b, p) = l.split_once("', '").unwrap();
+                Rule::new(b, &p.replace("\\\\", "\\"), 100).unwrap()
+            })
+            .collect();
+        assert_eq!(rules.len(), 7);
+        rules
     }
 
     fn p(bundle: &str, title: &str) -> (String, String) {
-        parse(&seed(), bundle, title)
+        let r = parse(&seed(), bundle, title);
+        (r.subject, r.context)
     }
 
     fn pair(s: &str, c: &str) -> (String, String) {
@@ -121,6 +138,14 @@ mod tests {
         assert_eq!(p("com.tdesktop.Telegram", "\u{200e}\u{2068}Прочиточная\u{2069} @ \u{200e}\u{2068}central hardware\u{2069} (1)"), pair("Прочиточная", "central hardware"));
         assert_eq!(p("com.apple.Safari", "PROPERTY REVIEW #391 | SUNWAY BELFIELD, KUALA LUMPUR - YouTube"), pair("PROPERTY REVIEW #391 | SUNWAY BELFIELD, KUALA LUMPUR", "YouTube"));
         assert_eq!(p("com.apple.mail", "processed — iCloud – 0 messages"), pair("processed", "iCloud"));
+    }
+
+    #[test]
+    fn extra_groups_become_fields() {
+        let rules = vec![Rule::new("t", r"^(?P<user>\S+) — (?P<subject>ssh \S+@(?P<host>\S+))$", 1).unwrap()];
+        let r = parse(&rules, "t", "root — ssh root@10.168.0.77");
+        assert_eq!(r.subject, "ssh root@10.168.0.77");
+        assert_eq!(r.fields, vec![("user".into(), "root".into()), ("host".into(), "10.168.0.77".into())]);
     }
 
     #[test]

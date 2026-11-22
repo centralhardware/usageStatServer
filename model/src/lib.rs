@@ -32,6 +32,9 @@ pub struct UsageBlock {
     pub subject: String,
     #[serde(default)]
     pub context: String,
+    /// The matching rule's other named groups (ClickHouse `Map`), e.g. ("host", "10.168.0.77").
+    #[serde(default)]
+    pub fields: Vec<(String, String)>,
     /// The front tab's domain when the app is a browser (youtube.com), else empty.
     #[serde(default)]
     pub domain: String,

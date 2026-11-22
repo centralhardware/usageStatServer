@@ -84,9 +84,10 @@ deploy hook. Changes that touch only `agent/` or docs don't trigger a deploy.
 ## Window title parsing
 
 The server splits each title into `subject` (what you're on: file, chat, page, command) and
-`context` (where: project, account, site, host); the raw `title` is kept. Rules live in
+`context` (where: project, account, site, host); any other named group in the matching rule
+(`(?P<host>…)`, `(?P<branch>…)`) lands in the `fields` map (`fields['host']`). The raw `title` is kept. Rules live in
 `title_rules` (a regex with named groups `subject`/`context`, per bundle id; `''` = any app;
-lower `priority` first). They are seeded on first start for IntelliJ, Terminal, Telegram, Safari,
+lower `priority` first). Migration V9 seeds them for IntelliJ, Terminal, Telegram, Safari,
 Chrome and Mail; apps without a rule get a generic split on ` — `, ` – `, ` | `, ` - `, ` @ `.
 Titles are cleaned first (invisible marks, trailing `(3)` counters, `207×59` sizes).
 The server reloads the rules every 5 minutes and re-parses stored titles when they change:

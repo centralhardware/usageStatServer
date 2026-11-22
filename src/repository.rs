@@ -31,7 +31,7 @@ pub struct UsageRepository {
     rules: Arc<RwLock<Vec<Rule>>>,
 }
 
-#[derive(clickhouse::Row, serde::Deserialize, serde::Serialize)]
+#[derive(clickhouse::Row, serde::Deserialize)]
 struct RuleRow {
     bundle_id: String,
     pattern: String,
@@ -47,19 +47,9 @@ impl UsageRepository {
     fn fill_subjects(&self, blocks: &mut [UsageBlock]) {
         let rules = self.rules.read().unwrap();
         for b in blocks.iter_mut().filter(|b| !b.title.is_empty()) {
-            (b.subject, b.context) = titles::parse(&rules, &b.bundle_id, &b.title);
+            let p = titles::parse(&rules, &b.bundle_id, &b.title);
+            (b.subject, b.context, b.fields) = (p.subject, p.context, p.fields);
         }
-    }
-
-    /// Writes the seed rules into an empty `title_rules`.
-    pub async fn seed_title_rules(&self) -> Result<(), clickhouse::error::Error> {
-        let n: u64 = self.client.query("SELECT count() FROM title_rules").fetch_one().await?;
-        if n > 0 {
-            return Ok(());
-        }
-        let rows: Vec<RuleRow> =
-            titles::SEED.iter().map(|(b, p)| RuleRow { bundle_id: (*b).into(), pattern: (*p).into(), priority: 100 }).collect();
-        self.insert("title_rules", &rows).await
     }
 
     /// Reloads `title_rules`; true when they changed. Rules that don't compile are skipped.
@@ -90,10 +80,9 @@ impl UsageRepository {
             .query("SELECT ?fields FROM mac_usage FINAL WHERE title != ''")
             .fetch_all()
             .await?;
-        let before: Vec<(String, String)> = blocks.iter().map(|b| (b.subject.clone(), b.context.clone())).collect();
+        let before: Vec<UsageBlock> = blocks.clone();
         self.fill_subjects(&mut blocks);
-        let changed: Vec<UsageBlock> =
-            blocks.into_iter().zip(before).filter(|(b, old)| (&b.subject, &b.context) != (&old.0, &old.1)).map(|(b, _)| b).collect();
+        let changed: Vec<UsageBlock> = blocks.into_iter().zip(before).filter(|(b, old)| b != old).map(|(b, _)| b).collect();
         if !changed.is_empty() {
             self.insert("mac_usage", &changed).await?;
         }

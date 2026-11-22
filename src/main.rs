@@ -46,9 +46,6 @@ async fn main() {
         }
     }
 
-    if let Err(e) = repository.seed_title_rules().await {
-        tracing::error!("Seeding title_rules failed: {e}");
-    }
     let repository = Arc::new(repository);
     // Title rules: loaded now and every 5 minutes; stored titles are re-parsed when they change.
     {
