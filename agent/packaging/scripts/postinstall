@@ -1,0 +1,29 @@
+#!/bin/sh
+PLIST=/Library/LaunchAgents/me.centralhardware.usage-agent.plist
+DOMAIN=me.centralhardware.usage-agent
+LOG=/Users/Shared/usage-agent.log
+
+/usr/sbin/chown root:wheel "$PLIST" /usr/local/libexec/usage-agent
+/bin/chmod 644 "$PLIST"
+touch "$LOG" && /bin/chmod 666 "$LOG"
+
+CONSOLE_USER=$(/usr/bin/stat -f %Su /dev/console)
+[ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] || exit 0
+UID_=$(/usr/bin/id -u "$CONSOLE_USER")
+as_user() { /bin/launchctl asuser "$UID_" /usr/bin/sudo -u "$CONSOLE_USER" "$@"; }
+
+# Ask for the server and token on first install; upgrades keep the stored ones.
+if ! as_user /usr/bin/defaults read "$DOMAIN" ServerURL >/dev/null 2>&1; then
+    URL=$(as_user /usr/bin/osascript \
+        -e 'text returned of (display dialog "UsageStatServer URL:" default answer "https://" with title "usage-agent")' 2>/dev/null)
+    case "$URL" in
+        http://?*|https://?*) as_user /usr/bin/defaults write "$DOMAIN" ServerURL -string "$URL" ;;
+    esac
+    TOKEN=$(as_user /usr/bin/osascript \
+        -e 'text returned of (display dialog "API token (empty for none):" default answer "" with hidden answer with title "usage-agent")' 2>/dev/null)
+    [ -n "$TOKEN" ] && as_user /usr/bin/defaults write "$DOMAIN" AuthToken -string "$TOKEN"
+fi
+/bin/chmod 600 "/Users/$CONSOLE_USER/Library/Preferences/$DOMAIN.plist" 2>/dev/null || true
+
+/bin/launchctl bootstrap "gui/$UID_" "$PLIST"
+exit 0

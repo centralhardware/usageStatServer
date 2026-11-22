@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stop a previous version so the binary can be replaced.
+CONSOLE_USER=$(/usr/bin/stat -f %Su /dev/console)
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    /bin/launchctl bootout "gui/$(/usr/bin/id -u "$CONSOLE_USER")/me.centralhardware.usage-agent" 2>/dev/null || true
+fi
+exit 0
