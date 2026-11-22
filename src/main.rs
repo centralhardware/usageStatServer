@@ -1,3 +1,4 @@
+mod migrations;
 mod repository;
 mod routes;
 
@@ -32,6 +33,17 @@ async fn main() {
     tracing::info!("ClickHouse URL: {clickhouse_url}, DB: {clickhouse_db}");
 
     let repository = UsageRepository::new(&clickhouse_url, &clickhouse_db, &clickhouse_user, &clickhouse_password);
+
+    // Retried until ClickHouse answers, so a deploy that races it still comes up migrated.
+    loop {
+        match migrations::migrate(&repository.client).await {
+            Ok(()) => break,
+            Err(e) => {
+                tracing::error!("Migrations failed, retrying in 10 s: {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        }
+    }
 
     let token = env::var("API_TOKEN").ok().filter(|t| !t.is_empty());
     if token.is_none() {

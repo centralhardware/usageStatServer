@@ -18,7 +18,7 @@ impl Store for UsageRepository {
 }
 
 pub struct UsageRepository {
-    client: Client,
+    pub client: Client,
 }
 
 impl UsageRepository {

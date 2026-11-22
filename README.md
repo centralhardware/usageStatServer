@@ -42,10 +42,9 @@ WHERE kind = 'app' AND start_at >= today()
 GROUP BY app_name ORDER BY hours DESC
 ```
 
-History is in [`migrations/`](migrations/); new migrations are applied by hand before deploying
-the code that needs them.
+History is in [`migrations/`](migrations/); the server applies new ones at startup.
 
 ## Deploy
 
 Pushing to `main` builds `ghcr.io/centralhardware/usagestatserver` and triggers the Coolify
-deploy hook. Changes that touch only `agent/`, `migrations/` or docs don't trigger a deploy.
+deploy hook. Changes that touch only `agent/` or docs don't trigger a deploy.

@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
     tags: ['v*.*.*']
-    paths-ignore: ['agent/**', '.github/workflows/agent.yml', 'migrations/**', '**.md']
+    paths-ignore: ['agent/**', '.github/workflows/agent.yml', '**.md']
   pull_request:
     branches: ['*']
-    paths-ignore: ['agent/**', '.github/workflows/agent.yml', 'migrations/**', '**.md']
+    paths-ignore: ['agent/**', '.github/workflows/agent.yml', '**.md']
 
 permissions:
   contents: read

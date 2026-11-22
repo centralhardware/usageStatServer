@@ -9,6 +9,7 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release \
     && rm -rf src target/release/UsageStatServer target/release/deps/UsageStatServer-*
 COPY src ./src
+COPY migrations ./migrations
 
 RUN cargo build --release
 FROM debian:bookworm-slim
