@@ -5,7 +5,7 @@ use usage_model::UsageBlock;
 fn block(start: i64) -> UsageBlock {
     UsageBlock {
         device_id: "mac".into(), device_name: "Mac".into(), kind: "app".into(), bundle_id: "a".into(), app_name: "A".into(),
-        title: String::new(), domain: String::new(), app_category: String::new(), start_at: start, stop_at: start + 5_000,
+        title: String::new(), domain: String::new(), app_category: String::new(), start_at: start, stop_at: start + 5_000, ..Default::default()
     }
 }
 

@@ -12,6 +12,9 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (4, "add_domain_and_app_category", include_str!("../migrations/V4__add_domain_and_app_category.sql")),
     (5, "create_activity_rules_table", include_str!("../migrations/V5__create_activity_rules_table.sql")),
     (6, "add_media_title", include_str!("../migrations/V6__add_media_title.sql")),
+    (7, "add_title_subject_context", include_str!("../migrations/V7__add_title_subject_context.sql")),
+    (8, "create_title_rules_table", include_str!("../migrations/V8__create_title_rules_table.sql")),
+    (9, "seed_title_rules", include_str!("../migrations/V9__seed_title_rules.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]
@@ -45,7 +48,8 @@ pub async fn migrate(client: &Client) -> Result<(), clickhouse::error::Error> {
             continue;
         }
         tracing::info!("Applying migration V{version}__{name}");
-        client.query(&statement(sql)).execute().await?;
+        // Raw: migration text may contain `?` (regexes), which query() would read as bind placeholders.
+        client.query_raw(&statement(sql)).execute().await?;
         let mut insert = client.insert::<Record>("schema_migrations").await?;
         insert.write(&Record { version, name }).await?;
         insert.end().await?;
