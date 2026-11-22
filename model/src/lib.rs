@@ -27,6 +27,11 @@ pub struct UsageBlock {
     /// The focused window's title; empty without the Accessibility permission.
     #[serde(default)]
     pub title: String,
+    /// Parsed from the title by the server (title_rules): the thing you're on and where.
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub context: String,
     /// The front tab's domain when the app is a browser (youtube.com), else empty.
     #[serde(default)]
     pub domain: String,
@@ -123,7 +128,7 @@ mod tests {
     fn block() -> UsageBlock {
         UsageBlock {
             device_id: "mac".into(), device_name: "Mac".into(), kind: KIND_APP.into(), bundle_id: "com.apple.Safari".into(),
-            app_name: "Safari".into(), title: String::new(), domain: String::new(), app_category: String::new(), start_at: 1_000, stop_at: 2_000,
+            app_name: "Safari".into(), title: String::new(), domain: String::new(), app_category: String::new(), start_at: 1_000, stop_at: 2_000, ..Default::default()
         }
     }
 

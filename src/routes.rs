@@ -119,7 +119,7 @@ mod tests {
     fn block() -> UsageBlock {
         UsageBlock {
             device_id: "D".into(), device_name: "Mac".into(), kind: "app".into(), bundle_id: "com.apple.Safari".into(),
-            app_name: "Safari".into(), title: "x".into(), domain: String::new(), app_category: String::new(), start_at: 1_000, stop_at: 2_000,
+            app_name: "Safari".into(), title: "x".into(), domain: String::new(), app_category: String::new(), start_at: 1_000, stop_at: 2_000, ..Default::default()
         }
     }
 

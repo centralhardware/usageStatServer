@@ -1,6 +1,7 @@
 mod migrations;
 mod repository;
 mod routes;
+mod titles;
 
 use crate::repository::UsageRepository;
 use crate::routes::usage_routes;
@@ -45,12 +46,34 @@ async fn main() {
         }
     }
 
+    if let Err(e) = repository.seed_title_rules().await {
+        tracing::error!("Seeding title_rules failed: {e}");
+    }
+    let repository = Arc::new(repository);
+    // Title rules: loaded now and every 5 minutes; stored titles are re-parsed when they change.
+    {
+        let repo = repository.clone();
+        tokio::spawn(async move {
+            loop {
+                match repo.load_title_rules().await {
+                    Ok(true) => match repo.reparse_titles().await {
+                        Ok(n) => tracing::info!("Title rules changed: re-parsed {n} rows"),
+                        Err(e) => tracing::error!("Re-parsing titles failed: {e}"),
+                    },
+                    Ok(false) => {}
+                    Err(e) => tracing::error!("Loading title_rules failed: {e}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            }
+        });
+    }
+
     let token = env::var("API_TOKEN").ok().filter(|t| !t.is_empty());
     if token.is_none() {
         tracing::warn!("API_TOKEN is not set: POST /api/usage accepts anyone");
     }
 
-    let app = usage_routes(Arc::new(repository), token);
+    let app = usage_routes(repository, token);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await

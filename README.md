@@ -80,3 +80,18 @@ History is in [`migrations/`](migrations/); the server applies new ones at start
 
 Pushing to `main` builds `ghcr.io/centralhardware/usagestatserver` and triggers the Coolify
 deploy hook. Changes that touch only `agent/` or docs don't trigger a deploy.
+
+## Window title parsing
+
+The server splits each title into `subject` (what you're on: file, chat, page, command) and
+`context` (where: project, account, site, host); the raw `title` is kept. Rules live in
+`title_rules` (a regex with named groups `subject`/`context`, per bundle id; `''` = any app;
+lower `priority` first). They are seeded on first start for IntelliJ, Terminal, Telegram, Safari,
+Chrome and Mail; apps without a rule get a generic split on ` — `, ` – `, ` | `, ` - `, ` @ `.
+Titles are cleaned first (invisible marks, trailing `(3)` counters, `207×59` sizes).
+The server reloads the rules every 5 minutes and re-parses stored titles when they change:
+
+```sql
+INSERT INTO usage_stats.title_rules (bundle_id, pattern) VALUES
+    ('com.microsoft.VSCode', '^(?P<subject>.+?) — (?P<context>.+?)$');
+```
