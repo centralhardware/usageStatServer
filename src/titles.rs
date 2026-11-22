@@ -97,22 +97,33 @@ pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> Parsed {
 mod tests {
     use super::*;
 
-    /// The rules V9 inserts, read from the migration itself: ('bundle', 'pattern') tuples with
+    /// The rules V11 inserts, read from the migration itself: ('bundle', 'pattern') tuples with
     /// ClickHouse string escaping (\\ → \\ in the regex).
     fn seed() -> Vec<Rule> {
-        let sql = include_str!("../migrations/V9__seed_title_rules.sql");
+        let sql = include_str!("../migrations/V11__reseed_title_rules.sql");
         let rules: Vec<Rule> = sql
             .lines()
             .map(str::trim)
             .filter(|l| l.starts_with("('"))
             .map(|l| {
                 let l = l.trim_end_matches([',', ';']).trim_start_matches("('").trim_end_matches("')");
-                let (b, p) = l.split_once("', '").unwrap();
-                Rule::new(b, &p.replace("\\\\", "\\"), 100).unwrap()
+                let (b, rest) = l.split_once("', '").unwrap();
+                let (p, prio) = rest.rsplit_once("', ").unwrap();
+                Rule::new(b, &p.replace("\\\\", "\\"), prio.trim_end_matches(')').parse().unwrap()).unwrap()
             })
             .collect();
-        assert_eq!(rules.len(), 7);
+        assert_eq!(rules.len(), 14);
+        let mut rules = rules;
+        rules.sort_by_key(|r| r.priority);
         rules
+    }
+
+    fn f(bundle: &str, title: &str) -> Vec<(String, String)> {
+        parse(&seed(), bundle, title).fields
+    }
+
+    fn kv(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
     }
 
     fn p(bundle: &str, title: &str) -> (String, String) {
@@ -138,6 +149,34 @@ mod tests {
         assert_eq!(p("com.tdesktop.Telegram", "\u{200e}\u{2068}Прочиточная\u{2069} @ \u{200e}\u{2068}central hardware\u{2069} (1)"), pair("Прочиточная", "central hardware"));
         assert_eq!(p("com.apple.Safari", "PROPERTY REVIEW #391 | SUNWAY BELFIELD, KUALA LUMPUR - YouTube"), pair("PROPERTY REVIEW #391 | SUNWAY BELFIELD, KUALA LUMPUR", "YouTube"));
         assert_eq!(p("com.apple.mail", "processed — iCloud – 0 messages"), pair("processed", "iCloud"));
+    }
+
+    #[test]
+    fn seeded_fields() {
+        const T: &str = "com.apple.Terminal";
+        const S: &str = "com.apple.Safari";
+        assert_eq!(f("com.jetbrains.intellij", "dotclaude – mac_usage [default@10.168.0.32]"), kv(&[("db_user", "default"), ("db_host", "10.168.0.32")]));
+        assert_eq!(f("com.jetbrains.intellij", "dotclaude – Main.kt"), kv(&[]));
+        assert_eq!(f(T, "root — [coolify] lazydocker ~ — ssh root@10.168.0.77 — 207×59"), kv(&[("user", "root"), ("command", "ssh"), ("ssh_user", "root"), ("ssh_host", "10.168.0.77")]));
+        assert_eq!(
+            p(T, "alex — claudesrv ~ — ssh -t root@10.168.0.55 su - claude -c 'tmux new-session -A -s claude' — 207×59"),
+            pair("ssh -t root@10.168.0.55 su - claude -c 'tmux new-session -A -s claude'", "claudesrv ~")
+        );
+        assert_eq!(f(T, "alex — claudesrv ~ — ssh -t root@10.168.0.55 su - claude"), kv(&[("user", "alex"), ("command", "ssh"), ("ssh_user", "root"), ("ssh_host", "10.168.0.55")]));
+        assert_eq!(f(T, "alex — ~ — -fish — 207×59"), kv(&[("user", "alex"), ("command", "fish")]));
+        assert_eq!(f(T, "alex — brew update && brew  ~ — curl ◂ bash -p /opt/homebrew/Library/Homebrew/brew.sh update — 207×59"), kv(&[("user", "alex"), ("command", "curl")]));
+        let pr = "agent: sample the front app every second by centralhardware · Pull Request #9 · centralhardware/usageStatServer";
+        assert_eq!(p(S, pr), pair("agent: sample the front app every second", "centralhardware/usageStatServer"));
+        assert_eq!(f(S, pr), kv(&[("author", "centralhardware"), ("kind", "Pull Request"), ("number", "9")]));
+        let commit = "agent: media source sticks to the tab that started playing · centralhardware/usageStatServer@2b5d60b";
+        assert_eq!(p(S, commit), pair("agent: media source sticks to the tab that started playing", "centralhardware/usageStatServer"));
+        assert_eq!(f(S, commit), kv(&[("commit", "2b5d60b")]));
+        assert_eq!(p(S, "Commits · centralhardware/usageStatServer"), pair("Commits", "centralhardware/usageStatServer"));
+        assert_eq!(p(S, "Виброс — контактный микрофон | Pangear"), pair("Виброс — контактный микрофон", "Pangear"));
+        assert_eq!(p(S, "track you mac usage - Google Search"), pair("track you mac usage", "Google Search"));
+        assert_eq!(p(S, "Tool to track computer/app usage? : r/macsysadmin"), pair("Tool to track computer/app usage?", "r/macsysadmin"));
+        assert_eq!(p(S, "Messages - Telegram - Dashboards - Grafana"), pair("Messages - Telegram - Dashboards", "Grafana"));
+        assert_eq!(f("com.apple.mail", "processed — iCloud – 0 messages"), kv(&[("messages", "0")]));
     }
 
     #[test]

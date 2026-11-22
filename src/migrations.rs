@@ -15,6 +15,8 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (7, "add_title_subject_context", include_str!("../migrations/V7__add_title_subject_context.sql")),
     (8, "create_title_rules_table", include_str!("../migrations/V8__create_title_rules_table.sql")),
     (9, "seed_title_rules", include_str!("../migrations/V9__seed_title_rules.sql")),
+    (10, "clear_title_rules", include_str!("../migrations/V10__clear_title_rules.sql")),
+    (11, "reseed_title_rules", include_str!("../migrations/V11__reseed_title_rules.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]
