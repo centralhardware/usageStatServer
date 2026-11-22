@@ -1,7 +1,7 @@
 //! The state machine behind the agent, kept free of macOS calls so it can be tested anywhere.
 //! Each tick it gets what the Mac looks like right now and returns the blocks that just closed.
 
-use usage_model::{AWAY_IDLE, AWAY_LOCK, AWAY_SLEEP, KIND_APP, KIND_AWAY, UsageBlock};
+use usage_model::{AWAY_IDLE, AWAY_LOCK, AWAY_SLEEP, KIND_APP, KIND_AWAY, MediaBlock, UsageBlock};
 
 /// No input for this long counts as away; the away block starts at the last input.
 pub const IDLE_LIMIT_SECS: f64 = 300.0;
@@ -20,6 +20,10 @@ pub struct FrontApp {
     pub bundle_id: String,
     pub name: String,
     pub title: String,
+    /// The front tab's domain, for a browser.
+    pub domain: String,
+    /// LSApplicationCategoryType.
+    pub category: String,
 }
 
 /// What the Mac looks like at one tick.
@@ -33,13 +37,14 @@ pub struct Observation {
 
 pub struct Tracker {
     device: String,
+    device_name: String,
     current: Option<UsageBlock>,
     last_tick: Option<i64>,
 }
 
 impl Tracker {
-    pub fn new(device: impl Into<String>) -> Self {
-        Self { device: device.into(), current: None, last_tick: None }
+    pub fn new(device: impl Into<String>, device_name: impl Into<String>) -> Self {
+        Self { device: device.into(), device_name: device_name.into(), current: None, last_tick: None }
     }
 
     /// The open block, with its stop moved to the last tick; re-sent on every flush.
@@ -47,11 +52,15 @@ impl Tracker {
         self.current.as_ref().filter(|b| b.kind == KIND_AWAY || b.length_ms() >= MIN_APP_MS)
     }
 
-    fn block(&self, kind: &str, bundle: &str, name: &str, title: &str, at: i64) -> UsageBlock {
+    fn block(&self, kind: &str, bundle: &str, name: &str, at: i64) -> UsageBlock {
         UsageBlock {
-            device_id: self.device.clone(), kind: kind.into(), bundle_id: bundle.into(), app_name: name.into(),
-            title: title.into(), start_at: at, stop_at: at,
+            device_id: self.device.clone(), device_name: self.device_name.clone(), kind: kind.into(), bundle_id: bundle.into(), app_name: name.into(),
+            start_at: at, stop_at: at, ..Default::default()
         }
+    }
+
+    fn app_block(&self, a: &FrontApp, at: i64) -> UsageBlock {
+        UsageBlock { title: a.title.clone(), domain: a.domain.clone(), app_category: a.category.clone(), ..self.block(KIND_APP, &a.bundle_id, &a.name, at) }
     }
 
     fn close(&mut self, at: i64, out: &mut Vec<UsageBlock>) {
@@ -76,7 +85,7 @@ impl Tracker {
             _ => {}
         }
         self.close(at, out);
-        self.current = Some(self.block(KIND_AWAY, reason, reason, "", at));
+        self.current = Some(self.block(KIND_AWAY, reason, reason, at));
     }
 
     pub fn tick(&mut self, o: &Observation) -> Vec<UsageBlock> {
@@ -110,11 +119,12 @@ impl Tracker {
                 (Some(a), Some(b)) if a.bundle_id == b.bundle_id && now - b.start_at < TITLE_SETTLE_MS => {
                     if let Some(b) = self.current.as_mut() {
                         b.title = a.title.clone();
+                        b.domain = a.domain.clone();
                     }
                 }
                 (Some(a), _) => {
                     self.close(now, &mut out);
-                    self.current = Some(self.block(KIND_APP, &a.bundle_id, &a.name, &a.title, now));
+                    self.current = Some(self.app_block(a, now));
                 }
             }
         }
@@ -130,12 +140,86 @@ impl Tracker {
     }
 }
 
+/// What is playing video right now: the app and where the video comes from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Playing {
+    pub bundle_id: String,
+    pub app_name: String,
+    /// The browser tab's domain, else the app's name.
+    pub source: String,
+}
+
+/// Turns "what plays video now" samples into media blocks: a block runs while the same
+/// app and source keep playing, and ends when it stops, changes, or the Mac sleeps.
+pub struct MediaTracker {
+    device: String,
+    device_name: String,
+    current: Option<MediaBlock>,
+    last_tick: Option<i64>,
+}
+
+impl MediaTracker {
+    pub fn new(device: impl Into<String>, device_name: impl Into<String>) -> Self {
+        Self { device: device.into(), device_name: device_name.into(), current: None, last_tick: None }
+    }
+
+    pub fn current(&self) -> Option<&MediaBlock> {
+        self.current.as_ref().filter(|b| b.stop_at - b.start_at >= MIN_APP_MS)
+    }
+
+    fn close(&mut self, at: i64, out: &mut Vec<MediaBlock>) {
+        if let Some(mut b) = self.current.take() {
+            b.stop_at = at.max(b.start_at);
+            if b.stop_at - b.start_at >= MIN_APP_MS {
+                out.push(b);
+            }
+        }
+    }
+
+    pub fn tick(&mut self, now: i64, playing: Option<&Playing>, gap_ms: i64) -> Vec<MediaBlock> {
+        let mut out = Vec::new();
+        if let Some(last) = self.last_tick
+            && now - last >= gap_ms
+        {
+            self.close(last, &mut out);
+        }
+        self.last_tick = Some(now);
+        match (playing, &self.current) {
+            (None, _) => self.close(now, &mut out),
+            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source => {}
+            (Some(p), _) => {
+                self.close(now, &mut out);
+                self.current = Some(MediaBlock {
+                    device_id: self.device.clone(), device_name: self.device_name.clone(), source: p.source.clone(),
+                    bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), start_at: now, stop_at: now,
+                });
+            }
+        }
+        if let Some(b) = self.current.as_mut() {
+            b.stop_at = now;
+            if b.stop_at - b.start_at >= MAX_BLOCK_MS {
+                out.push(b.clone());
+                b.start_at = now;
+            }
+        }
+        out
+    }
+}
+
+/// The host of a URL without "www.", e.g. "https://www.youtube.com/watch?v=x" → "youtube.com".
+pub fn domain(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.split(':').next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host).to_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn app(id: &str, title: &str) -> Option<FrontApp> {
-        Some(FrontApp { bundle_id: id.into(), name: id.into(), title: title.into() })
+        Some(FrontApp { bundle_id: id.into(), name: id.into(), title: title.into(), ..Default::default() })
     }
 
     /// Ticks every 2 s over [from, to] seconds with the same state; idle grows with time
@@ -153,7 +237,7 @@ mod tests {
 
     #[test]
     fn switching_apps_closes_blocks() {
-        let mut t = Tracker::new("mac");
+        let mut t = Tracker::new("uuid", "mac");
         assert!(run(&mut t, 0, 10, app("a", "x"), None, false).is_empty());
         let out = run(&mut t, 12, 20, app("b", "y"), None, false);
         assert_eq!(out.len(), 1);
@@ -163,7 +247,7 @@ mod tests {
 
     #[test]
     fn short_blocks_are_dropped_and_early_titles_rename() {
-        let mut t = Tracker::new("mac");
+        let mut t = Tracker::new("uuid", "mac");
         run(&mut t, 0, 0, app("a", ""), None, false);
         assert!(run(&mut t, 1, 1, app("b", ""), None, false).is_empty()); // a lasted 1 s
         run(&mut t, 3, 3, app("b", "loaded"), None, false); // within settle: renamed
@@ -175,7 +259,7 @@ mod tests {
 
     #[test]
     fn idle_is_backdated_and_ends_on_input() {
-        let mut t = Tracker::new("mac");
+        let mut t = Tracker::new("uuid", "mac");
         run(&mut t, 0, 50, app("a", ""), None, false);
         // No input from 50 s on: away once 5 min have passed, starting at 50 s.
         let out = run(&mut t, 52, 400, app("a", ""), Some(50), false);
@@ -188,7 +272,7 @@ mod tests {
 
     #[test]
     fn idle_then_lock_splits_and_sleep_gap_is_away() {
-        let mut t = Tracker::new("mac");
+        let mut t = Tracker::new("uuid", "mac");
         run(&mut t, 0, 50, app("a", ""), None, false);
         run(&mut t, 52, 400, app("a", ""), Some(50), false);
         let out = run(&mut t, 402, 402, app("a", ""), Some(50), true);
@@ -209,8 +293,28 @@ mod tests {
     }
 
     #[test]
+    fn media_blocks_follow_source() {
+        let mut m = MediaTracker::new("uuid", "mac");
+        let yt = Playing { bundle_id: "com.apple.Safari".into(), app_name: "Safari".into(), source: "youtube.com".into() };
+        let nf = Playing { source: "netflix.com".into(), ..yt.clone() };
+        assert!(m.tick(0, Some(&yt), 30_000).is_empty());
+        assert!(m.tick(10_000, Some(&yt), 30_000).is_empty());
+        let out = m.tick(20_000, Some(&nf), 30_000);
+        assert_eq!((out[0].source.as_str(), out[0].start_at, out[0].stop_at), ("youtube.com", 0, 20_000));
+        let out = m.tick(30_000, None, 30_000);
+        assert_eq!((out[0].source.as_str(), out[0].stop_at), ("netflix.com", 30_000));
+        assert!(m.current().is_none());
+    }
+
+    #[test]
+    fn domains() {
+        assert_eq!(domain("https://www.youtube.com/watch?v=x").as_deref(), Some("youtube.com"));
+        assert_eq!(domain("https://user@Netflix.com:443/title").as_deref(), Some("netflix.com"));
+    }
+
+    #[test]
     fn long_blocks_are_cut() {
-        let mut t = Tracker::new("mac");
+        let mut t = Tracker::new("uuid", "mac");
         let out = run(&mut t, 0, 3700, app("a", ""), None, false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].length_ms(), MAX_BLOCK_MS);

@@ -1,10 +1,10 @@
 use clickhouse::Client;
-use usage_model::UsageBlock;
+use usage_model::{MediaBlock, UsageBlock};
 
 /// What the routes need from storage, so they can be tested against a fake.
 pub trait Store: Send + Sync + 'static {
     fn ping(&self) -> impl Future<Output = Result<(), String>> + Send;
-    fn save(&self, blocks: Vec<UsageBlock>) -> impl Future<Output = Result<(), String>> + Send;
+    fn save(&self, blocks: Vec<UsageBlock>, media: Vec<MediaBlock>) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 impl Store for UsageRepository {
@@ -12,8 +12,14 @@ impl Store for UsageRepository {
         self.client.query("SELECT 1").execute().await.map_err(|e| e.to_string())
     }
 
-    async fn save(&self, blocks: Vec<UsageBlock>) -> Result<(), String> {
-        self.insert(&blocks).await.map_err(|e| e.to_string())
+    async fn save(&self, blocks: Vec<UsageBlock>, media: Vec<MediaBlock>) -> Result<(), String> {
+        if !blocks.is_empty() {
+            self.insert("mac_usage", &blocks).await.map_err(|e| e.to_string())?;
+        }
+        if !media.is_empty() {
+            self.insert("mac_media", &media).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -27,13 +33,16 @@ impl UsageRepository {
         Self { client }
     }
 
-    async fn insert(&self, blocks: &[UsageBlock]) -> Result<(), clickhouse::error::Error> {
-        let mut insert = self.client.insert::<UsageBlock>("mac_usage").await?;
-        for b in blocks {
-            insert.write(b).await?;
+    async fn insert<T: clickhouse::Row + serde::Serialize>(&self, table: &str, rows: &[T]) -> Result<(), clickhouse::error::Error>
+    where
+        for<'a> T: clickhouse::RowWrite<Value<'a> = T>,
+    {
+        let mut insert = self.client.insert::<T>(table).await?;
+        for r in rows {
+            insert.write(r).await?;
         }
         insert.end().await?;
-        tracing::info!("Saved {} usage blocks from {}", blocks.len(), blocks.first().map_or("-", |b| b.device_id.as_str()));
+        tracing::info!("Saved {} rows into {table}", rows.len());
         Ok(())
     }
 }

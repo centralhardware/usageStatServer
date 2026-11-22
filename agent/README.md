@@ -5,6 +5,11 @@ frontmost app, its focused window's title, input idle time and the lock state, t
 blocks and posts them to `POST /api/usage` every minute. It stays resident (launchd `KeepAlive`).
 
 - A new app or a new window title starts a new block; blocks under 2 s are dropped.
+- For a browser, the front tab's domain is recorded too (asked via AppleScript when the title
+  changes; macOS asks once per browser to allow Automation). Each app's declared category
+  (LSApplicationCategoryType) is recorded with its blocks.
+- Every 10 s it checks what plays video (the app holding a display-sleep power assertion) and,
+  for a browser, its front tab's domain; those stretches go to `mac_media`.
 - No input for 5 min, a locked screen or sleep (a gap between samples) is an `away` block with that reason.
 - The open block is re-sent with a later stop on every flush; blocks the server hasn't taken wait in
   `~/Library/Application Support/usage-agent/queue.jsonl`.

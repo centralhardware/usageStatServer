@@ -3,7 +3,7 @@
 
 use crate_shim::*;
 use std::time::Duration;
-use usage_agent::tracker::FrontApp;
+use usage_agent::tracker::{FrontApp, Playing};
 
 mod crate_shim {
     pub use core_foundation::base::{CFType, TCFType};
@@ -54,7 +54,9 @@ pub fn front_app() -> Option<FrontApp> {
     let bundle_id = app.bundleIdentifier()?.to_string();
     let name = app.localizedName().map_or_else(|| bundle_id.clone(), |n| n.to_string());
     let title = window_title(app.processIdentifier());
-    Some(FrontApp { bundle_id, name, title })
+    let category = app_category(&app, &bundle_id);
+    let domain = front_domain(&bundle_id, &title);
+    Some(FrontApp { bundle_id, name, title, domain, category })
 }
 
 /// The focused window's title, or "" without permission or a window.
@@ -109,4 +111,138 @@ pub fn device_name() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "Mac".into())
+}
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOServiceMatching(name: *const std::ffi::c_char) -> core_foundation_sys::dictionary::CFMutableDictionaryRef;
+    fn IOServiceGetMatchingService(main_port: u32, matching: core_foundation_sys::dictionary::CFMutableDictionaryRef) -> u32;
+    fn IORegistryEntryCreateCFProperty(entry: u32, key: CFStringRef, allocator: core_foundation_sys::base::CFAllocatorRef, options: u32) -> CFTypeRef;
+    fn IOObjectRelease(object: u32) -> i32;
+}
+
+/// The Mac's IOPlatformUUID (the same id battery-agent reports), or its name if unreadable.
+pub fn device_id() -> String {
+    unsafe {
+        let service = IOServiceGetMatchingService(0, IOServiceMatching(c"IOPlatformExpertDevice".as_ptr()));
+        if service == 0 {
+            return device_name();
+        }
+        let key = CFString::from_static_string("IOPlatformUUID");
+        let value = IORegistryEntryCreateCFProperty(service, key.as_concrete_TypeRef(), core_foundation_sys::base::kCFAllocatorDefault, 0);
+        IOObjectRelease(service);
+        if value.is_null() {
+            return device_name();
+        }
+        CFType::wrap_under_create_rule(value).downcast::<CFString>().map_or_else(device_name, |s| s.to_string())
+    }
+}
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOPMCopyAssertionsByProcess(by_process: *mut CFDictionaryRef) -> i32;
+}
+
+/// Pids holding a "keep the display awake" power assertion: what video players and browsers
+/// take while a video plays.
+fn display_awake_pids() -> Vec<i32> {
+    use core_foundation::array::CFArray;
+    use core_foundation::number::CFNumber;
+    let mut raw: CFDictionaryRef = std::ptr::null();
+    if unsafe { IOPMCopyAssertionsByProcess(&mut raw) } != 0 || raw.is_null() {
+        return Vec::new();
+    }
+    let by_pid: CFDictionary<CFNumber, CFArray<CFDictionary<CFString, CFType>>> = unsafe { CFDictionary::wrap_under_create_rule(raw) };
+    let (pids, lists) = by_pid.get_keys_and_values();
+    let mut out = Vec::new();
+    for (pid, list) in pids.into_iter().zip(lists) {
+        let pid = unsafe { CFNumber::wrap_under_get_rule(pid as _) };
+        let list: CFArray<CFDictionary<CFString, CFType>> = unsafe { CFArray::wrap_under_get_rule(list as _) };
+        let video = list.iter().any(|a| {
+            a.find(CFString::from_static_string("AssertType"))
+                .and_then(|t| t.downcast::<CFString>())
+                .is_some_and(|t| t.to_string() == "PreventUserIdleDisplaySleep")
+        });
+        if video && let Some(p) = pid.to_i32() {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// AppleScript that returns a browser's front tab URL, by bundle id; Firefox has none.
+fn tab_url_script(bundle_id: &str) -> Option<&'static str> {
+    match bundle_id {
+        "com.apple.Safari" | "com.apple.SafariTechnologyPreview" => Some("URL of current tab of front window"),
+        "com.google.Chrome" | "com.google.Chrome.canary" | "com.brave.Browser" | "com.microsoft.edgemac"
+        | "company.thebrowser.Browser" | "com.vivaldi.Vivaldi" | "com.operasoftware.Opera" => Some("URL of active tab of front window"),
+        _ => None,
+    }
+}
+
+fn tab_domain(bundle_id: &str) -> Option<String> {
+    let expr = tab_url_script(bundle_id)?;
+    let out = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &format!("tell application id \"{bundle_id}\" to get {expr}")])
+        .output()
+        .ok()?;
+    usage_agent::tracker::domain(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// The app playing video now, if any, with the browser tab's domain as its source. A web
+/// browser's own helper processes take the assertion, so a pid is mapped to its app bundle.
+pub fn playing() -> Option<Playing> {
+    use objc2_app_kit::NSRunningApplication;
+    for pid in display_awake_pids() {
+        let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else { continue };
+        let Some(bundle) = app.bundleIdentifier().map(|b| b.to_string()) else { continue };
+        // Helper processes (com.google.Chrome.helper…) belong to their browser.
+        let bundle = tab_url_script_owner(&bundle).unwrap_or(bundle);
+        let name = app.localizedName().map_or_else(|| bundle.clone(), |n| n.to_string());
+        let source = tab_domain(&bundle).unwrap_or_else(|| name.clone());
+        return Some(Playing { bundle_id: bundle, app_name: name, source });
+    }
+    None
+}
+
+/// The browser a helper process belongs to, from its bundle id prefix.
+fn tab_url_script_owner(bundle: &str) -> Option<String> {
+    ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "company.thebrowser.Browser", "com.vivaldi.Vivaldi"]
+        .into_iter()
+        .find(|b| bundle != *b && bundle.starts_with(b))
+        .map(str::to_owned)
+}
+
+thread_local! {
+    static CATEGORIES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
+    static LAST_DOMAIN: std::cell::RefCell<(String, String, String)> = Default::default();
+}
+
+/// LSApplicationCategoryType from the app's Info.plist, cached per bundle id.
+fn app_category(app: &objc2_app_kit::NSRunningApplication, bundle_id: &str) -> String {
+    if let Some(c) = CATEGORIES.with_borrow(|m| m.get(bundle_id).cloned()) {
+        return c;
+    }
+    let category = app
+        .bundleURL()
+        .and_then(|u| u.path())
+        .and_then(|p| plist::Value::from_file(format!("{p}/Contents/Info.plist")).ok())
+        .and_then(|v| v.as_dictionary()?.get("LSApplicationCategoryType")?.as_string().map(str::to_owned))
+        .unwrap_or_default();
+    CATEGORIES.with_borrow_mut(|m| m.insert(bundle_id.to_owned(), category.clone()));
+    category
+}
+
+/// The front tab's domain when the app is a browser; asked again only when the title changes,
+/// since it costs an osascript run.
+fn front_domain(bundle_id: &str, title: &str) -> String {
+    if tab_url_script(bundle_id).is_none() {
+        return String::new();
+    }
+    if let Some(d) = LAST_DOMAIN.with_borrow(|(b, t, d)| (b == bundle_id && t == title).then(|| d.clone())) {
+        return d;
+    }
+    let d = tab_domain(bundle_id).unwrap_or_default();
+    LAST_DOMAIN.with_borrow_mut(|v| *v = (bundle_id.to_owned(), title.to_owned(), d.clone()));
+    d
 }

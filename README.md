@@ -24,7 +24,7 @@ The macOS agent that sends it lives in [`agent/`](agent/README.md).
 
 ## Schema
 
-Table `mac_usage` (ReplacingMergeTree(stop_at), `ORDER BY (device_id, start_at)`), one row per stretch:
+Table `mac_usage` (ReplacingMergeTree(stop_at), `ORDER BY (device_id, start_at)`), one row per stretch. `device_id` is the Mac's IOPlatformUUID (as in `battery_health`), `device_name` its name:
 
 | kind | bundle_id / app_name | title |
 |---|---|---|
@@ -40,6 +40,38 @@ SELECT app_name, round(sum(dateDiff('second', start_at, stop_at)) / 3600, 2) AS 
 FROM mac_usage FINAL
 WHERE kind = 'app' AND start_at >= today()
 GROUP BY app_name ORDER BY hours DESC
+```
+
+Columns `domain` (front browser tab, app blocks only) and `app_category` (the app's own
+LSApplicationCategoryType, Screen Time style) feed classification.
+
+Table `mac_media`: one row per stretch of video playing: `source` (the browser tab's domain, or
+the player app's name), the app, start/stop. Also re-sent while open: query with `FINAL`.
+
+### Classification (RescueTime style)
+
+`activity_rules` maps an app (`kind = 'app'`, pattern = bundle id) or a site (`kind = 'domain'`)
+to a category and a productivity level from -2 (very distracting) to +2 (very productive).
+It starts empty, with no built-in site list; add rules as you go:
+
+```sql
+INSERT INTO activity_rules (kind, pattern, category, productivity) VALUES
+    ('domain', 'youtube.com', 'Entertainment', -2),
+    ('app', 'com.jetbrains.intellij', 'Development', 2);
+```
+
+A domain rule beats an app rule, and both beat the app's declared category:
+
+```sql
+SELECT
+    if(d.category != '', d.category, if(a.category != '', a.category,
+       replaceOne(u.app_category, 'public.app-category.', ''))) AS category,
+    if(d.category != '', d.productivity, a.productivity) AS productivity,
+    round(sum(dateDiff('second', u.start_at, u.stop_at)) / 3600, 2) AS hours
+FROM (SELECT * FROM mac_usage FINAL WHERE kind = 'app' AND start_at >= today()) AS u
+LEFT JOIN (SELECT * FROM activity_rules FINAL WHERE kind = 'domain') AS d ON d.pattern = u.domain
+LEFT JOIN (SELECT * FROM activity_rules FINAL WHERE kind = 'app') AS a ON a.pattern = u.bundle_id
+GROUP BY category, productivity ORDER BY hours DESC
 ```
 
 History is in [`migrations/`](migrations/); the server applies new ones at startup.

@@ -14,7 +14,11 @@ pub const AWAY_SLEEP: &str = "sleep";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "clickhouse", derive(clickhouse::Row))]
 pub struct UsageBlock {
+    /// The Mac's IOPlatformUUID: stable across renames, unique per machine.
     pub device_id: String,
+    /// The Mac's name (System Settings → General → Sharing), for display.
+    #[serde(default)]
+    pub device_name: String,
     /// "app": `bundle_id` was frontmost; "away": nobody at the Mac, `bundle_id` says why
     /// (idle, lock, sleep).
     pub kind: String,
@@ -23,6 +27,13 @@ pub struct UsageBlock {
     /// The focused window's title; empty without the Accessibility permission.
     #[serde(default)]
     pub title: String,
+    /// The front tab's domain when the app is a browser (youtube.com), else empty.
+    #[serde(default)]
+    pub domain: String,
+    /// The app's declared category (LSApplicationCategoryType), e.g.
+    /// public.app-category.developer-tools; empty when it declares none.
+    #[serde(default)]
+    pub app_category: String,
     /// Unix milliseconds (ClickHouse `DateTime64(3)`).
     pub start_at: i64,
     /// Unix milliseconds. The agent re-sends the block it is still in with a later stop;
@@ -30,9 +41,43 @@ pub struct UsageBlock {
     pub stop_at: i64,
 }
 
+/// A stretch of video playing: a row of ClickHouse `mac_media`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "clickhouse", derive(clickhouse::Row))]
+pub struct MediaBlock {
+    pub device_id: String,
+    #[serde(default)]
+    pub device_name: String,
+    /// Where the video comes from: the browser tab's domain (youtube.com), else the app's name.
+    pub source: String,
+    /// The app playing it.
+    pub bundle_id: String,
+    pub app_name: String,
+    /// Unix milliseconds.
+    pub start_at: i64,
+    pub stop_at: i64,
+}
+
+impl MediaBlock {
+    pub fn problem(&self) -> Option<String> {
+        for (name, v) in [("device_id", &self.device_id), ("source", &self.source), ("bundle_id", &self.bundle_id), ("app_name", &self.app_name)] {
+            if v.is_empty() || v.chars().count() > 256 {
+                return Some(format!("media {name} must be 1-256 characters"));
+            }
+        }
+        if self.stop_at < self.start_at || self.stop_at - self.start_at > 24 * 3600 * 1000 {
+            return Some("media block must run forward and last at most 24 hours".into());
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct UsageBatch {
+    #[serde(default)]
     pub blocks: Vec<UsageBlock>,
+    #[serde(default)]
+    pub media: Vec<MediaBlock>,
 }
 
 impl UsageBlock {
@@ -69,8 +114,8 @@ mod tests {
 
     fn block() -> UsageBlock {
         UsageBlock {
-            device_id: "mac".into(), kind: KIND_APP.into(), bundle_id: "com.apple.Safari".into(),
-            app_name: "Safari".into(), title: String::new(), start_at: 1_000, stop_at: 2_000,
+            device_id: "mac".into(), device_name: "Mac".into(), kind: KIND_APP.into(), bundle_id: "com.apple.Safari".into(),
+            app_name: "Safari".into(), title: String::new(), domain: String::new(), app_category: String::new(), start_at: 1_000, stop_at: 2_000,
         }
     }
 

@@ -1,7 +1,16 @@
 //! Closed blocks not yet delivered (offline, server down), one JSON per
 //! line. Sent oldest first, in batches, once the server answers again.
 
-use usage_model::UsageBlock;
+use serde::{Deserialize, Serialize};
+use usage_model::{MediaBlock, UsageBatch, UsageBlock};
+
+/// One queued line. Untagged, so lines written before media existed (plain blocks) still read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Item {
+    Usage(UsageBlock),
+    Media(MediaBlock),
+}
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -52,12 +61,12 @@ impl Queue {
         fs::metadata(&self.path).map_or(true, |m| m.len() == 0)
     }
 
-    pub fn push(&self, block: &UsageBlock) {
+    pub fn push(&self, item: &Item) {
         if let Some(dir) = self.path.parent() {
             let _ = fs::create_dir_all(dir);
         }
         if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.path)
-            && let Ok(line) = serde_json::to_string(block)
+            && let Ok(line) = serde_json::to_string(item)
         {
             let _ = writeln!(f, "{line}");
         }
@@ -78,7 +87,7 @@ impl Queue {
     /// Sends the oldest batch together with `extra` (the open block), in one request.
     /// On success, or a permanent rejection (logged), that batch leaves the queue; on a
     /// retryable error everything stays. An empty queue still sends `extra`.
-    pub fn flush(&self, extra: Option<&UsageBlock>, send: impl Fn(&[UsageBlock]) -> Result<(), SendError>) -> Result<(), String> {
+    pub fn flush(&self, extra: Vec<Item>, send: impl Fn(&UsageBatch) -> Result<(), SendError>) -> Result<(), String> {
         let text = fs::read_to_string(&self.path).unwrap_or_default();
         let mut lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
         if lines.len() > MAX_LINES {
@@ -86,9 +95,14 @@ impl Queue {
         }
         let take = lines.len().min(FLUSH_BATCH);
         // Unreadable lines are dropped along with the batch.
-        let mut batch: Vec<UsageBlock> = lines[..take].iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
-        batch.extend(extra.cloned());
-        let result = if batch.is_empty() {
+        let mut batch = UsageBatch::default();
+        for item in lines[..take].iter().filter_map(|l| serde_json::from_str::<Item>(l).ok()).chain(extra) {
+            match item {
+                Item::Usage(b) => batch.blocks.push(b),
+                Item::Media(m) => batch.media.push(m),
+            }
+        }
+        let result = if batch.blocks.is_empty() && batch.media.is_empty() {
             Ok(())
         } else {
             match send(&batch) {

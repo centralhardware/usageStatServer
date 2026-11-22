@@ -7,6 +7,10 @@ use clickhouse::Client;
 /// Every migration, in version order. Add new files here.
 pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "create_mac_usage_table", include_str!("../migrations/V1__create_mac_usage_table.sql")),
+    (2, "add_device_name", include_str!("../migrations/V2__add_device_name.sql")),
+    (3, "create_mac_media_table", include_str!("../migrations/V3__create_mac_media_table.sql")),
+    (4, "add_domain_and_app_category", include_str!("../migrations/V4__add_domain_and_app_category.sql")),
+    (5, "create_activity_rules_table", include_str!("../migrations/V5__create_activity_rules_table.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]

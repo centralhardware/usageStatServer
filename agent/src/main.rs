@@ -11,6 +11,9 @@
 //! ~/Library/Preferences/me.centralhardware.usage-agent.plist (the installer asks for it),
 //! plus an optional `AuthToken` ($USAGE_AGENT_TOKEN) sent as a bearer token.
 //! Preferences are re-read every flush, so changes need no restart.
+//! Every 10 s it also checks what plays video (the app holding a display-sleep power
+//! assertion) and, for a browser, the front tab's domain via AppleScript (macOS asks once per
+//! browser for Automation); those go to `mac_media`.
 //! `--dry-run` prints one observation and exits.
 
 #[cfg(target_os = "macos")]
@@ -27,12 +30,14 @@ fn main() -> ExitCode {
 #[cfg(target_os = "macos")]
 fn main() -> ExitCode {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use usage_agent::queue::{Queue, SendError};
-    use usage_agent::tracker::{Observation, Tracker};
+    use usage_agent::queue::{Item, Queue, SendError};
+    use usage_agent::tracker::{MediaTracker, Observation, SLEEP_GAP_MS, Tracker};
 
     const ENDPOINT: &str = "/api/usage";
     const TICK: Duration = Duration::from_secs(2);
     const FLUSH_EVERY: Duration = Duration::from_secs(60);
+    /// Media is sampled less often: finding the tab's domain runs osascript.
+    const MEDIA_EVERY: Duration = Duration::from_secs(10);
 
     let observe = || Observation {
         now_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
@@ -45,8 +50,8 @@ fn main() -> ExitCode {
         mac::pump_run_loop(Duration::from_millis(100));
         let o = observe();
         println!(
-            "device={} app={:?} idle={:.0}s locked={} accessibility={}",
-            mac::device_name(), o.app, o.idle_secs, o.locked, mac::accessibility_trusted(false)
+            "device={} ({}) app={:?} idle={:.0}s locked={} accessibility={}\nplaying={:?}",
+            mac::device_id(), mac::device_name(), o.app, o.idle_secs, o.locked, mac::accessibility_trusted(false), mac::playing()
         );
         return ExitCode::SUCCESS;
     }
@@ -71,14 +76,24 @@ fn main() -> ExitCode {
         .build()
         .into();
 
-    let mut tracker = Tracker::new(mac::device_name());
+    let mut tracker = Tracker::new(mac::device_id(), mac::device_name());
+    let mut media = MediaTracker::new(mac::device_id(), mac::device_name());
+    let mut last_media = Instant::now() - MEDIA_EVERY;
     let mut last_flush = Instant::now();
     let mut warned_no_url = false;
     loop {
         // Lets AppKit process workspace changes, so frontmostApplication stays current.
         mac::pump_run_loop(TICK);
-        for b in tracker.tick(&observe()) {
-            queue.push(&b);
+        let o = observe();
+        for b in tracker.tick(&o) {
+            queue.push(&Item::Usage(b));
+        }
+        if last_media.elapsed() >= MEDIA_EVERY {
+            last_media = Instant::now();
+            let playing = if o.locked { None } else { mac::playing() };
+            for m in media.tick(o.now_ms, playing.as_ref(), SLEEP_GAP_MS + MEDIA_EVERY.as_millis() as i64) {
+                queue.push(&Item::Media(m));
+            }
         }
         if last_flush.elapsed() < FLUSH_EVERY {
             continue;
@@ -96,19 +111,19 @@ fn main() -> ExitCode {
         warned_no_url = false;
         let url = if url.trim_end_matches('/').ends_with(ENDPOINT) { url } else { format!("{}{ENDPOINT}", url.trim_end_matches('/')) };
         let token = std::env::var("USAGE_AGENT_TOKEN").ok().or(prefs.1);
-        let send = |blocks: &[usage_model::UsageBlock]| -> Result<(), SendError> {
+        let send = |body: &usage_model::UsageBatch| -> Result<(), SendError> {
             let mut req = agent.post(&url);
             if let Some(t) = &token {
                 req = req.header("Authorization", &format!("Bearer {t}"));
             }
-            let body = usage_model::UsageBatch { blocks: blocks.to_vec() };
-            match req.send_json(&body) {
+            match req.send_json(body) {
                 Ok(r) if r.status().is_success() => Ok(()),
                 Ok(r) => Err(SendError::from_status(r.status().as_u16(), format!("HTTP {}", r.status()))),
                 Err(e) => Err(SendError::Retry(e.to_string())),
             }
         };
-        if let Err(e) = queue.flush(tracker.current(), send) {
+        let open: Vec<Item> = tracker.current().cloned().map(Item::Usage).into_iter().chain(media.current().cloned().map(Item::Media)).collect();
+        if let Err(e) = queue.flush(open, send) {
             log::warn!("send failed, will retry: {e}");
         }
     }
