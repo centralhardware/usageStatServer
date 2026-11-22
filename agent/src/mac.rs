@@ -100,6 +100,13 @@ pub fn screen_locked() -> bool {
     }
 }
 
+/// The Mac's name as set in System Settings → General → Sharing.
 pub fn device_name() -> String {
-    objc2_foundation::NSHost::currentHost().localizedName().map_or_else(|| "Mac".into(), |n| n.to_string())
+    std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "Mac".into())
 }
