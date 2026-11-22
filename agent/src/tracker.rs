@@ -115,7 +115,14 @@ impl Tracker {
         if self.away_reason().is_none() {
             match (&o.app, &self.current) {
                 (None, _) => self.close(now, &mut out),
-                (Some(a), Some(b)) if a.bundle_id == b.bundle_id && a.title == b.title => {}
+                (Some(a), Some(b)) if a.bundle_id == b.bundle_id && a.title == b.title => {
+                    // The tab's URL can settle after its title (or be read mid-switch): keep the latest.
+                    if !a.domain.is_empty() && a.domain != b.domain
+                        && let Some(b) = self.current.as_mut()
+                    {
+                        b.domain = a.domain.clone();
+                    }
+                }
                 (Some(a), Some(b)) if a.bundle_id == b.bundle_id && now - b.start_at < TITLE_SETTLE_MS => {
                     if let Some(b) = self.current.as_mut() {
                         b.title = a.title.clone();
@@ -204,6 +211,21 @@ impl MediaTracker {
         }
         out
     }
+}
+
+/// The app behind a WebKit media assertion. Safari's playback is held by runningboardd for the
+/// app, named like `app<application.com.apple.Safari.2646886.2647464(501)>…:WebKit Media Playback`;
+/// this returns `com.apple.Safari`.
+pub fn webkit_media_owner(name: &str) -> Option<String> {
+    if !name.contains("Media Playback") {
+        return None;
+    }
+    let rest = &name[name.find("application.")? + "application.".len()..];
+    let id = rest.split(['(', '>', ']']).next()?;
+    // Drop the trailing numeric components (instance ids): com.apple.Safari.2646886.2647464.
+    let parts: Vec<&str> = id.split('.').collect();
+    let keep = parts.iter().rposition(|p| !p.chars().all(|c| c.is_ascii_digit()))? + 1;
+    Some(parts[..keep].join("."))
 }
 
 /// The host of a URL without "www.", e.g. "https://www.youtube.com/watch?v=x" → "youtube.com".
@@ -304,6 +326,15 @@ mod tests {
         let out = m.tick(30_000, None, 30_000);
         assert_eq!((out[0].source.as_str(), out[0].stop_at), ("netflix.com", 30_000));
         assert!(m.current().is_none());
+    }
+
+    #[test]
+    fn webkit_owner() {
+        let n = "app<application.com.apple.Safari.2646886.2647464(501)>620-81745-468442:WebKit Media Playback";
+        assert_eq!(webkit_media_owner(n).as_deref(), Some("com.apple.Safari"));
+        let x = "xpcservice<com.apple.WebKit.GPU([app<application.com.apple.Safari.2646886.2647464(501)>:81745])(501)>:WebKit Media Playback";
+        assert_eq!(webkit_media_owner(x).as_deref(), Some("com.apple.Safari"));
+        assert_eq!(webkit_media_owner("Powerd - Prevent sleep while display is on"), None);
     }
 
     #[test]

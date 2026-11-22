@@ -143,9 +143,10 @@ unsafe extern "C" {
     fn IOPMCopyAssertionsByProcess(by_process: *mut CFDictionaryRef) -> i32;
 }
 
-/// Pids holding a "keep the display awake" power assertion: what video players and browsers
-/// take while a video plays.
-fn display_awake_pids() -> Vec<i32> {
+/// Who is playing media, from the power assertions: (pid, owner bundle id if named in the
+/// assertion). Players and Chromium take PreventUserIdleDisplaySleep themselves ("Video Wake Lock");
+/// Safari's WebKit playback is held by runningboardd and names the app ("WebKit Media Playback").
+fn media_assertions() -> Vec<(i32, Option<String>)> {
     use core_foundation::array::CFArray;
     use core_foundation::number::CFNumber;
     let mut raw: CFDictionaryRef = std::ptr::null();
@@ -154,19 +155,23 @@ fn display_awake_pids() -> Vec<i32> {
     }
     let by_pid: CFDictionary<CFNumber, CFArray<CFDictionary<CFString, CFType>>> = unsafe { CFDictionary::wrap_under_create_rule(raw) };
     let (pids, lists) = by_pid.get_keys_and_values();
+    let text = |a: &CFDictionary<CFString, CFType>, k: &'static str| {
+        a.find(CFString::from_static_string(k)).and_then(|v| v.downcast::<CFString>()).map(|s| s.to_string()).unwrap_or_default()
+    };
     let mut out = Vec::new();
     for (pid, list) in pids.into_iter().zip(lists) {
-        let pid = unsafe { CFNumber::wrap_under_get_rule(pid as _) };
+        let Some(pid) = unsafe { CFNumber::wrap_under_get_rule(pid as _) }.to_i32() else { continue };
         let list: CFArray<CFDictionary<CFString, CFType>> = unsafe { CFArray::wrap_under_get_rule(list as _) };
-        let video = list.iter().any(|a| {
-            a.find(CFString::from_static_string("AssertType"))
-                .and_then(|t| t.downcast::<CFString>())
-                .is_some_and(|t| t.to_string() == "PreventUserIdleDisplaySleep")
-        });
-        if video && let Some(p) = pid.to_i32() {
-            out.push(p);
+        for a in list.iter() {
+            if let Some(owner) = usage_agent::tracker::webkit_media_owner(&text(&a, "AssertName")) {
+                out.push((pid, Some(owner)));
+            } else if text(&a, "AssertType") == "PreventUserIdleDisplaySleep" {
+                out.push((pid, None));
+            }
         }
     }
+    // Named owners (Safari) first: they are certain; a bare display assertion may be anything.
+    out.sort_by_key(|(_, o)| o.is_none());
     out
 }
 
@@ -193,8 +198,12 @@ fn tab_domain(bundle_id: &str) -> Option<String> {
 /// browser's own helper processes take the assertion, so a pid is mapped to its app bundle.
 pub fn playing() -> Option<Playing> {
     use objc2_app_kit::NSRunningApplication;
-    for pid in display_awake_pids() {
-        let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else { continue };
+    for (pid, owner) in media_assertions() {
+        let app = match &owner {
+            Some(b) => NSRunningApplication::runningApplicationsWithBundleIdentifier(&objc2_foundation::NSString::from_str(b)).firstObject(),
+            None => NSRunningApplication::runningApplicationWithProcessIdentifier(pid),
+        };
+        let Some(app) = app else { continue };
         let Some(bundle) = app.bundleIdentifier().map(|b| b.to_string()) else { continue };
         // Helper processes (com.google.Chrome.helper…) belong to their browser.
         let bundle = tab_url_script_owner(&bundle).unwrap_or(bundle);
@@ -215,7 +224,7 @@ fn tab_url_script_owner(bundle: &str) -> Option<String> {
 
 thread_local! {
     static CATEGORIES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
-    static LAST_DOMAIN: std::cell::RefCell<(String, String, String)> = Default::default();
+    static LAST_DOMAIN: std::cell::RefCell<(String, String, String, bool)> = Default::default();
 }
 
 /// LSApplicationCategoryType from the app's Info.plist, cached per bundle id.
@@ -239,10 +248,15 @@ fn front_domain(bundle_id: &str, title: &str) -> String {
     if tab_url_script(bundle_id).is_none() {
         return String::new();
     }
-    if let Some(d) = LAST_DOMAIN.with_borrow(|(b, t, d)| (b == bundle_id && t == title).then(|| d.clone())) {
+    // Asked again when the title changes, and once more on the next sample after that, since
+    // the URL can lag the title during a tab switch.
+    if let Some(d) = LAST_DOMAIN.with_borrow(|(b, t, d, confirmed)| (*confirmed && b == bundle_id && t == title).then(|| d.clone())) {
         return d;
     }
     let d = tab_domain(bundle_id).unwrap_or_default();
-    LAST_DOMAIN.with_borrow_mut(|v| *v = (bundle_id.to_owned(), title.to_owned(), d.clone()));
+    LAST_DOMAIN.with_borrow_mut(|v| {
+        let confirmed = v.0 == bundle_id && v.1 == title;
+        *v = (bundle_id.to_owned(), title.to_owned(), d.clone(), confirmed);
+    });
     d
 }
