@@ -10,6 +10,8 @@ pub const KIND_AWAY: &str = "away";
 pub const AWAY_IDLE: &str = "idle";
 pub const AWAY_LOCK: &str = "lock";
 pub const AWAY_SLEEP: &str = "sleep";
+/// Another macOS account is on the console (fast user switching): this one is in the background.
+pub const AWAY_SWITCHED: &str = "switched";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "clickhouse", derive(clickhouse::Row))]
@@ -19,6 +21,9 @@ pub struct UsageBlock {
     /// The Mac's name (System Settings → General → Sharing), for display.
     #[serde(default)]
     pub device_name: String,
+    /// The macOS account the agent runs in (short name); several accounts can share one Mac.
+    #[serde(default)]
+    pub user_name: String,
     /// "app": `bundle_id` was frontmost; "away": nobody at the Mac, `bundle_id` says why
     /// (idle, lock, sleep).
     pub kind: String,
@@ -56,6 +61,9 @@ pub struct MediaBlock {
     pub device_id: String,
     #[serde(default)]
     pub device_name: String,
+    /// The macOS account the agent runs in (short name); several accounts can share one Mac.
+    #[serde(default)]
+    pub user_name: String,
     /// Where the video comes from: the browser tab's domain (youtube.com), else the app's name.
     pub source: String,
     /// The app playing it.
