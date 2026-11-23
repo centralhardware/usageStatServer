@@ -161,8 +161,17 @@ fn main() -> ExitCode {
             }
         };
         let open: Vec<Item> = tracker.current().cloned().map(Item::Usage).into_iter().chain(media.current().cloned().map(Item::Media)).collect();
-        if let Err(e) = queue.flush(open, send) {
-            log::warn!("send failed, will retry: {e}");
+        // Keep sending while a backlog is left (backfill, back online), not one batch a minute.
+        // Bounded by the queue's cap, in case the file can't be rewritten.
+        let mut extra = open;
+        for _ in 0..usage_agent::queue::MAX_LINES / usage_agent::queue::FLUSH_BATCH + 1 {
+            if let Err(e) = queue.flush(std::mem::take(&mut extra), &send) {
+                log::warn!("send failed, will retry: {e}");
+                break;
+            }
+            if queue.is_empty() {
+                break;
+            }
         }
     }
 }
