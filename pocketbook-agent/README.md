@@ -5,8 +5,8 @@ macOS agent, through `POST /api/usage`:
 
 | kind | bundle_id / app_name | title |
 |---|---|---|
-| `app` | the reader process (e.g. `reader`) | book file name without extension |
-| `app` | `library` / `Library` (no document open) | empty |
+| `app` | the foreground app (task manager appname) | the open book's title, empty outside a book |
+| `app` | `library` / `Library` (only when the task manager is unavailable and no document is open) | empty |
 | `away` | `sleep` (device suspended) | empty |
 
 It is a C program: tapping **usage-agent** in Applications starts a background daemon (once per

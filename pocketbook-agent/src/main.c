@@ -76,8 +76,62 @@ static int load_config(void) {
     return server_url[0] != 0;
 }
 
-/* The book open in any reader process, else the library (home screen, settings…). */
+#ifndef NO_INKVIEW
+/* The foreground task from the firmware's task manager: its app name, and the book when the
+ * active subtask has one (readers register it with SetSubtaskInfo). Returns 0 when the task
+ * manager can't be asked. */
+static int task_state(State *out) {
+    int task = -1, subtask = -1;
+    GetActiveTask(&task, &subtask);
+    taskinfo *ti = task >= 0 ? GetTaskInfo(task) : NULL;
+    if (!ti) return 0;
+    memset(out, 0, sizeof *out);
+    strcpy(out->kind, KIND_APP);
+    snprintf(out->bundle_id, sizeof out->bundle_id, "%s", ti->appname ? ti->appname : "unknown");
+    snprintf(out->app_name, sizeof out->app_name, "%s", out->bundle_id);
+    for (int i = 0; ti->subtasks && i < ti->nsubtasks; i++) {
+        subtaskinfo *s = &ti->subtasks[i];
+        if (s->id != subtask) continue;
+        if (s->book && s->book[0]) {
+            /* name is the title the reader shows; fall back to the file name. */
+            if (s->name && s->name[0]) snprintf(out->title, sizeof out->title, "%s", s->name);
+            else {
+                const char *b = strrchr(s->book, '/');
+                snprintf(out->title, sizeof out->title, "%s", b ? b + 1 : s->book);
+            }
+        }
+        break;
+    }
+    return 1;
+}
+
+/* Once at startup: every task the firmware knows, to see what the readers register. */
+static void log_tasks(void) {
+    int list[64];
+    int n = GetTaskList(list, 64);
+    int at = -1, as = -1;
+    GetActiveTask(&at, &as);
+    logf_("tasks: %d, active %d/%d", n, at, as);
+    for (int i = 0; i < n && i < 64; i++) {
+        taskinfo *ti = GetTaskInfo(list[i]);
+        if (!ti) { logf_("  task %d: no info", list[i]); continue; }
+        logf_("  task %d app=%s pid=%d", list[i], ti->appname ? ti->appname : "-", (int)ti->mainpid);
+        for (int j = 0; ti->subtasks && j < ti->nsubtasks; j++)
+            logf_("    sub %d name=%s book=%s", ti->subtasks[j].id,
+                  ti->subtasks[j].name ? ti->subtasks[j].name : "-",
+                  ti->subtasks[j].book ? ti->subtasks[j].book : "-");
+    }
+}
+#endif
+
+/* The foreground app and its book; without the task manager, a book open in any process,
+ * else the library (home screen, settings…). */
 static void current_state(State *out) {
+#ifndef NO_INKVIEW
+    static int warned;
+    if (task_state(out)) return;
+    if (!warned++) logf_("task manager unavailable, falling back to /proc");
+#endif
     DIR *proc = opendir("/proc");
     struct dirent *e;
     while (proc && (e = readdir(proc))) {
@@ -195,6 +249,9 @@ static void flush(const Block *open_block) {
 static void daemon_loop(void) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     logf_("started as %s, sending to %s", device.device_id, server_url);
+#ifndef NO_INKVIEW
+    log_tasks();
+#endif
     Block cur = {0};
     int64_t last_wall = now_ms(CLOCK_REALTIME), last_mono = now_ms(CLOCK_MONOTONIC);
     int64_t last_send = 0;
