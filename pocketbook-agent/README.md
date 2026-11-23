@@ -8,17 +8,16 @@ macOS agent, through `POST /api/usage`:
 | `app` | the foreground app (e.g. `eink-reader`, `bookshelf`, `explorer`) | the open book's file name without extensions, only while its reader is in front |
 | `away` | `sleep` (device suspended) | empty |
 
-It is a C program: tapping **usage-agent** in Applications starts a background daemon (once per
-boot), tapping it again shows its status. Every 30 s the daemon looks at:
+It is a C program that stays resident as a background InkView task: tapping **usage-agent** in
+Applications starts it (once per boot) and shows its status; tapping again shows the status and
+sends it back to the background. Every 30 s it asks:
 
-- `/var/run/task/<pid>`: the firmware's task manager touches a task's file when it comes to the
-  front, so the newest one of a live process is the app on screen (its name from `/proc`);
-- `/tmp/.current`: the path of the book last opened, written on open. The task that came to the
-  front within 15 s of that write is the reader; while it stays in front, that book is open;
+- the firmware task manager (`GetActiveTask`/`GetTaskInfo`) which app is in front. It answers only
+  a registered InkView task, which is why the agent isn't a forked daemon; readers don't take the
+  book on their command line and `/var/run/task/<pid>` mtimes don't follow switching either;
+- the book: the one the active subtask registered, else `/tmp/.current` (written by the firmware
+  on open) while the app that was in front when it changed stays in front;
 - a jump of wall-clock time past monotonic time: the device slept.
-
-(The InkView task API — `GetActiveTask`/`GetTaskInfo` — returns nothing outside an InkView app,
-and readers don't take the book on their command line, hence these files.)
 
 Closed blocks are spooled to a file and sent at start, every 5 minutes and on waking, retrying
 every 30 s for 5 minutes after a failure (Wi-Fi takes a while to come back after sleep). The
@@ -35,9 +34,10 @@ agent never turns Wi-Fi on itself.
    device_id=pocketbook-619
    device_name=PocketBook 619
    ```
-3. Eject, open Applications → usage-agent. After a reboot, tap it again.
+3. Eject, open Applications → usage-agent. After a reboot, tap it again. Closing it in the task
+   manager stops it.
 
-Files in `system/usage-agent/`: `spool.jsonl` (unsent blocks), `log`, `pid`.
+Files in `system/usage-agent/`: `spool.jsonl` (unsent blocks), `log`.
 
 ## Build
 

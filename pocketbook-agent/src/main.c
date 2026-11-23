@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #ifndef NO_INKVIEW
 #include <inkview.h>
@@ -23,17 +24,13 @@
 #define DIR_PATH "/mnt/ext1/system/usage-agent"
 #define CONFIG_PATH DIR_PATH "/config"
 #define SPOOL_PATH DIR_PATH "/spool.jsonl"
-#define PID_PATH DIR_PATH "/pid"
 #define LOG_PATH DIR_PATH "/log"
 
 #define TICK_S 30
 #define SEND_EVERY_S 300
 #define SUSPEND_THRESHOLD_MS 15000
 #define MAX_BATCH 500
-#define TASK_DIR "/var/run/task"
 #define CURRENT_BOOK "/tmp/.current"
-/* How close the reader's coming to the front must be to the book's open. */
-#define BOOK_OPEN_WINDOW_S 15
 
 static char server_url[256];
 static char token[128];
@@ -85,104 +82,58 @@ static int64_t mtime_of(const char *path) {
     return stat(path, &st) == 0 ? (int64_t)st.st_mtime : -1;
 }
 
-/* The foreground task: the firmware's task manager touches /var/run/task/<pid> when a task
- * comes to the front, so the newest entry of a live process is the one on screen. */
-/* A running process: zombies (an app that just exited) have an empty cmdline. */
-static int alive(pid_t pid) {
-    char p[64], c;
-    snprintf(p, sizeof p, "/proc/%d/cmdline", (int)pid);
-    int fd = open(p, O_RDONLY);
-    if (fd < 0) return 0;
-    ssize_t n = read(fd, &c, 1);
-    close(fd);
-    return n == 1;
+static void read_current_book(char *title, size_t cap) {
+    char path[512] = "";
+    FILE *f = fopen(CURRENT_BOOK, "r");
+    if (f) { if (!fgets(path, sizeof path, f)) path[0] = 0; fclose(f); }
+    path[strcspn(path, "\r\n")] = 0;
+    title_from_path(title, cap, path);
 }
 
-/* Temporary: each task file's mtime and the strings in it, to learn how the task manager
- * marks the front task. Logged on each of the first 30 ticks (15 minutes). */
-static void log_task_files(void) {
-    static int left = 30;
-    if (left-- <= 0) return;
-    DIR *d = opendir(TASK_DIR);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
-        char p[300], buf[256], out[512];
-        snprintf(p, sizeof p, TASK_DIR "/%s", e->d_name);
-        FILE *f = fopen(p, "rb");
-        if (!f) continue;
-        size_t n = fread(buf, 1, sizeof buf, f);
-        fclose(f);
-        size_t o = 0;
-        for (size_t i = 0; i < n && o + 4 < sizeof out; i++) {
-            unsigned char c = (unsigned char)buf[i];
-            o += (size_t)snprintf(out + o, sizeof out - o, "%02x", c);
-        }
-        out[o] = 0;
-        logf_("  task %s alive=%d mtime=%lld %s", e->d_name, alive(atoi(e->d_name)),
-              (long long)mtime_of(p), out);
-    }
-    closedir(d);
-}
-
-static pid_t foreground(int64_t *since) {
-    DIR *d = opendir(TASK_DIR);
-    if (!d) return 0;
-    pid_t best = 0;
-    int64_t best_m = -1;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        pid_t pid = (pid_t)atoi(e->d_name);
-        if (pid <= 0 || !alive(pid)) continue;
-        char p[300];
-        snprintf(p, sizeof p, TASK_DIR "/%s", e->d_name);
-        int64_t m = mtime_of(p);
-        if (m > best_m) { best_m = m; best = pid; }
-    }
-    closedir(d);
-    *since = best_m;
-    return best;
-}
-
-/* The foreground app, with the open book when that app is the one that opened it: the
- * firmware writes the book's path to /tmp/.current on open, so the task that came to the
- * front at that moment is the reader. */
+/* The foreground app from the firmware's task manager, which answers only a registered
+ * InkView task: that is why the agent stays resident as one (in the background) instead of
+ * forking a plain daemon. The book is the one the active subtask registered, or else
+ * /tmp/.current (written by the firmware on open) while the task that was in front when it
+ * changed stays in front. */
 static void current_state(State *out) {
-    static int64_t seen_current = -1;
-    static pid_t reader = 0;
     memset(out, 0, sizeof *out);
     strcpy(out->kind, KIND_APP);
-
-    int64_t since = -1;
-    pid_t fg = foreground(&since);
-    char cmd[512] = "";
-    if (fg) {
-        char p[64];
-        snprintf(p, sizeof p, "/proc/%d/cmdline", (int)fg);
-        int fd = open(p, O_RDONLY);
-        if (fd >= 0) { ssize_t n = read(fd, cmd, sizeof cmd - 1); cmd[n > 0 ? n : 0] = 0; close(fd); }
-    }
-    if (!cmd[0]) {
+#ifndef NO_INKVIEW
+    static int64_t seen_current = -1;
+    static int reader_task = -1;
+    static int warned;
+    int task = -1, subtask = -1;
+    GetActiveTask(&task, &subtask);
+    taskinfo *ti = task >= 0 ? GetTaskInfo(task) : NULL;
+    if (!ti) {
+        if (!warned++) logf_("task manager gave no active task (%d)", task);
         strcpy(out->bundle_id, "unknown");
         strcpy(out->app_name, "unknown");
         return;
     }
-    app_from_path(out->bundle_id, sizeof out->bundle_id, cmd);
+    warned = 0;
+    snprintf(out->bundle_id, sizeof out->bundle_id, "%s", ti->appname && ti->appname[0] ? ti->appname : "unknown");
     snprintf(out->app_name, sizeof out->app_name, "%s", out->bundle_id);
-
-    int64_t cur_m = mtime_of(CURRENT_BOOK);
-    if (cur_m != seen_current) {
-        seen_current = cur_m;
-        reader = (cur_m >= 0 && since >= 0 && llabs(since - cur_m) <= BOOK_OPEN_WINDOW_S) ? fg : 0;
+    for (int i = 0; ti->subtasks && i < ti->nsubtasks; i++) {
+        subtaskinfo *st = &ti->subtasks[i];
+        if (st->id == subtask && st->book && st->book[0]) {
+            title_from_path(out->title, sizeof out->title, st->book);
+            return;
+        }
     }
-    if (reader && fg == reader) {
-        char path[512] = "";
-        FILE *f = fopen(CURRENT_BOOK, "r");
-        if (f) { if (!fgets(path, sizeof path, f)) path[0] = 0; fclose(f); }
-        path[strcspn(path, "\r\n")] = 0;
-        title_from_path(out->title, sizeof out->title, path);
+    int64_t m = mtime_of(CURRENT_BOOK);
+    if (m != seen_current) {
+        /* At the first look we can't tell who opened it; after that, whoever is in front. */
+        static int first = 1;
+        reader_task = first ? -1 : task;
+        first = 0;
+        seen_current = m;
     }
+    if (reader_task >= 0 && task == reader_task) read_current_book(out->title, sizeof out->title);
+#else
+    strcpy(out->bundle_id, "unknown");
+    strcpy(out->app_name, "unknown");
+#endif
 }
 
 static void spool(const Block *b) {
@@ -306,7 +257,6 @@ static void daemon_loop(void) {
         State st;
         current_state(&st);
         if (!state_eq(&st, &cur.state)) logf_("now: %s \"%s\"", st.bundle_id, st.title);
-        log_task_files();
         if (!cur.state.bundle_id[0]) {
             cur.state = st;
             cur.start_at = wall;
@@ -332,30 +282,6 @@ static void daemon_loop(void) {
     }
 }
 
-static pid_t running_pid(void) {
-    FILE *f = fopen(PID_PATH, "r");
-    if (!f) return 0;
-    int pid = 0;
-    if (fscanf(f, "%d", &pid) != 1) pid = 0;
-    fclose(f);
-    return (pid > 0 && kill(pid, 0) == 0) ? pid : 0;
-}
-
-/* Detaches a daemon child; returns its pid in the parent. */
-static pid_t start_daemon(void) {
-    pid_t pid = fork();
-    if (pid != 0) return pid;
-    setsid();
-    if (fork() != 0) _exit(0);
-    signal(SIGHUP, SIG_IGN);
-    int null = open("/dev/null", O_RDWR);
-    dup2(null, 0); dup2(null, 1); dup2(null, 2);
-    FILE *f = fopen(PID_PATH, "w");
-    if (f) { fprintf(f, "%d\n", getpid()); fclose(f); }
-    daemon_loop();
-    _exit(0);
-}
-
 static char status_text[512];
 
 static int count_spooled(void) {
@@ -367,37 +293,48 @@ static int count_spooled(void) {
     return n;
 }
 
+static void *loop_thread(void *arg) {
+    (void)arg;
+    daemon_loop();
+    return NULL;
+}
+
 #ifndef NO_INKVIEW
+static int configured, started;
+
+/* Tapping the app brings this same resident task to the front: show the status, then go
+ * back to the background (CloseApp would end the agent). */
 static int handler(int type, int p1, int p2) {
     (void)p1; (void)p2;
     if (type == EVT_SHOW) {
-        Message(ICON_INFORMATION, "Usage agent", status_text, 5000);
-        CloseApp();
+        if (!configured)
+            snprintf(status_text, sizeof status_text,
+                     "No server_url in %s.\nCreate it with server_url=, token=, device_id= lines.", CONFIG_PATH);
+        else
+            snprintf(status_text, sizeof status_text, "%s as %s.\n%d blocks waiting to be sent.\nLog: %s",
+                     started++ ? "Running" : "Started", device.device_id, count_spooled(), LOG_PATH);
+        Message(ICON_INFORMATION, "Usage agent", status_text, 4000);
+        if (configured) GoToBackground();
+        else CloseApp();
     }
     return 0;
 }
 #endif
 
 int main(int argc, char **argv) {
+    (void)argc; (void)argv;
     mkdir(DIR_PATH, 0755);
-    int foreground = argc > 1 && !strcmp(argv[1], "--foreground");
-    if (!load_config()) {
-        snprintf(status_text, sizeof status_text,
-                 "No server_url in %s.\nCreate it with server_url=, token=, device_id= lines.", CONFIG_PATH);
-    } else if (foreground) {
-        daemon_loop();
-    } else if (running_pid()) {
-        snprintf(status_text, sizeof status_text, "Running as %s.\n%d blocks waiting to be sent.",
-                 device.device_id, count_spooled());
-    } else {
-        start_daemon();
-        snprintf(status_text, sizeof status_text, "Started as %s.\nSending to %s.\nLog: %s",
-                 device.device_id, server_url, LOG_PATH);
-    }
+    signal(SIGPIPE, SIG_IGN);
 #ifndef NO_INKVIEW
+    configured = load_config();
+    if (configured) {
+        pthread_t t;
+        pthread_create(&t, NULL, loop_thread, NULL);
+    }
     InkViewMain(handler);
 #else
-    puts(status_text);
+    /* Host build: no task manager; for a syntax check and a dry run of the loop. */
+    if (load_config()) loop_thread(NULL);
 #endif
     return 0;
 }

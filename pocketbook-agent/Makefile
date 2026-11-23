@@ -11,7 +11,7 @@ LDFLAGS += -L$(SYSROOT)/usr/local/lib
 endif
 
 usage-agent.app: src/main.c src/core.c src/core.h
-	$(CC) $(CFLAGS) -o $@ src/main.c src/core.c $(LDFLAGS) -linkview -lcurl
+	$(CC) $(CFLAGS) -o $@ src/main.c src/core.c $(LDFLAGS) -linkview -lcurl -lpthread
 
 test: tests/test_core.c src/core.c src/core.h
 	cc -std=gnu99 -Wall -Wextra -Werror -o test_core tests/test_core.c src/core.c && ./test_core
