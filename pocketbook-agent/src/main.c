@@ -248,13 +248,15 @@ static int n_inputs;
 
 static void open_inputs(void) {
     DIR *d = opendir("/dev/input");
+    if (!d) logf_("/dev/input: %s (uid %d)", strerror(errno), (int)getuid());
     struct dirent *e;
     while (d && (e = readdir(d)) && n_inputs < MAX_INPUTS) {
-        if (strncmp(e->d_name, "event", 5)) continue;
+        if (e->d_name[0] == '.') continue;
+        if (strncmp(e->d_name, "event", 5)) { logf_("/dev/input/%s: skipped", e->d_name); continue; }
         char p[300];
         snprintf(p, sizeof p, "/dev/input/%s", e->d_name);
         int fd = open(p, O_RDONLY | O_NONBLOCK);
-        if (fd < 0) continue;
+        if (fd < 0) { logf_("%s: %s (uid %d)", p, strerror(errno), (int)getuid()); continue; }
         inputs[n_inputs].fd = fd;
         inputs[n_inputs].events = POLLIN;
         n_inputs++;
