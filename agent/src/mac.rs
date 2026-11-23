@@ -53,10 +53,60 @@ pub fn front_app() -> Option<FrontApp> {
     let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
     let bundle_id = app.bundleIdentifier()?.to_string();
     let name = app.localizedName().map_or_else(|| bundle_id.clone(), |n| n.to_string());
-    let title = window_title(app.processIdentifier());
+    let mut title = window_title(app.processIdentifier());
     let category = app_category(&app, &bundle_id);
+    // A private window keeps its page and site out of the log.
+    if bundle_id == "com.apple.Safari" && safari_private(app.processIdentifier(), &title) {
+        return Some(FrontApp { bundle_id, name, title: PRIVATE_TITLE.into(), domain: String::new(), category });
+    }
     let domain = front_domain(&bundle_id, &title);
+    title = title.chars().take(1024).collect();
     Some(FrontApp { bundle_id, name, title, domain, category })
+}
+
+/// What a Safari private window is logged as, in place of its title.
+pub const PRIVATE_TITLE: &str = "Private Browsing";
+
+fn ax_attr(el: &CFType, name: &'static str) -> Option<CFType> {
+    let mut v: CFTypeRef = std::ptr::null();
+    let attr = CFString::from_static_string(name);
+    unsafe {
+        if AXUIElementCopyAttributeValue(el.as_CFTypeRef(), attr.as_concrete_TypeRef(), &mut v) != 0 || v.is_null() {
+            return None;
+        }
+        Some(CFType::wrap_under_create_rule(v))
+    }
+}
+
+fn ax_children(el: &CFType) -> Vec<CFType> {
+    use core_foundation::array::CFArray;
+    ax_attr(el, "AXChildren")
+        .and_then(|c| c.downcast::<CFArray<*const std::ffi::c_void>>())
+        .map(|a| a.iter().filter(|p| !p.is_null()).map(|p| unsafe { CFType::wrap_under_get_rule(*p as CFTypeRef) }).collect())
+        .unwrap_or_default()
+}
+
+/// Whether Safari's front window is private. Safari's AppleScript doesn't say; its Window menu
+/// does: it offers "Move Tab to New Private Window" only from a private window (the trick from
+/// alexwlchan.net/2021/detect-private-browsing). Read through Accessibility, which the agent
+/// has anyway; asked again only when the title changes. English menu titles only.
+fn safari_private(pid: i32, title: &str) -> bool {
+    if let Some(p) = LAST_PRIVATE.with_borrow(|(t, p)| (t == title).then_some(*p)) {
+        return p;
+    }
+    let private = unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        !app.is_null() && {
+            let app = CFType::wrap_under_create_rule(app);
+            ax_attr(&app, "AXMenuBar").is_some_and(|bar| {
+                ax_children(&bar).iter().flat_map(ax_children).flat_map(|menu| ax_children(&menu)).any(|item| {
+                    ax_attr(&item, "AXTitle").and_then(|t| t.downcast::<CFString>()).is_some_and(|t| t.to_string() == "Move Tab to New Private Window")
+                })
+            })
+        }
+    };
+    LAST_PRIVATE.with_borrow_mut(|v| *v = (title.to_owned(), private));
+    private
 }
 
 /// The focused window's title, or "" without permission or a window.
@@ -79,7 +129,7 @@ fn window_title(pid: i32) -> String {
             return String::new();
         }
         let title = CFType::wrap_under_create_rule(title);
-        title.downcast::<CFString>().map(|s| s.to_string().chars().take(1024).collect()).unwrap_or_default()
+        title.downcast::<CFString>().map(|s| s.to_string()).unwrap_or_default()
     }
 }
 
@@ -212,6 +262,10 @@ pub fn playing() -> Option<Playing> {
         // Now Playing names the media when it belongs to this app; then the tab showing that
         // title is the one playing. Otherwise fall back to the tab in front when playback began.
         let (title, artist) = np.as_ref().filter(|n| n.bundle == bundle).map(|n| (n.title.clone(), n.artist.clone())).unwrap_or_default();
+        // Safari with a private front window: whatever plays is likely in it, so no title or site.
+        if bundle == "com.apple.Safari" && LAST_PRIVATE.with_borrow(|(_, p)| *p) {
+            return Some(Playing { bundle_id: bundle, app_name: name, source: PRIVATE_TITLE.into(), title: String::new(), artist: String::new() });
+        }
         let source = tab_with_title(&bundle, &title)
             .or_else(|| playing_source(&bundle))
             .unwrap_or_else(|| name.clone());
@@ -242,6 +296,7 @@ fn tab_url_script_owner(bundle: &str) -> Option<String> {
 }
 
 thread_local! {
+    static LAST_PRIVATE: std::cell::RefCell<(String, bool)> = Default::default();
     static PLAYING_SOURCE: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
     static CATEGORIES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
     static LAST_DOMAIN: std::cell::RefCell<(String, String, String, bool)> = Default::default();

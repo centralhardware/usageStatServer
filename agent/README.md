@@ -5,6 +5,9 @@ frontmost app, its focused window's title, input idle time and the lock state, t
 blocks and posts them to `POST /api/usage` every minute. It stays resident (launchd `KeepAlive`).
 
 - A new app or a new window title starts a new block; blocks under 2 s are dropped.
+- A Safari private window is logged with the title `Private Browsing` and no domain (detected from
+  Safari's Window menu, which offers "Move Tab to New Private Window" only there; English menus only).
+  Video playing while the front Safari window is private gets source `Private Browsing`, no title.
 - For a browser, the front tab's domain is recorded too (asked via AppleScript when the title
   changes; macOS asks once per browser to allow Automation). Each app's declared category
   (LSApplicationCategoryType) is recorded with its blocks.
