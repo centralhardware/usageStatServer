@@ -86,11 +86,16 @@ fn ax_children(el: &CFType) -> Vec<CFType> {
         .unwrap_or_default()
 }
 
-/// Whether Safari's front window is private. Safari's AppleScript doesn't say; its Window menu
-/// does: it offers "Move Tab to New Private Window" only from a private window (the trick from
+/// Whether Safari's front window is private: its accessibility title ends in ", Private Browsing";
+/// failing that (other title formats), Safari's Window menu: it offers "Move Tab to New Private Window" only from a private window (the trick from
 /// alexwlchan.net/2021/detect-private-browsing). Read through Accessibility, which the agent
 /// has anyway; asked again only when the title changes. English menu titles only.
 fn safari_private(pid: i32, title: &str) -> bool {
+    // Safari's own window title for a private window: "<page>, Private Browsing" (English).
+    if title.ends_with(", Private Browsing") || title == "Private Browsing" {
+        LAST_PRIVATE.with_borrow_mut(|v| *v = (title.to_owned(), true));
+        return true;
+    }
     if let Some(p) = LAST_PRIVATE.with_borrow(|(t, p)| (t == title).then_some(*p)) {
         return p;
     }
