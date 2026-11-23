@@ -164,3 +164,99 @@ fn hex(b: &[u8], base: usize) {
         println!("{:06x}  {:<47}  {a}", base + i * 16, h.join(" "));
     }
 }
+
+/// Reads new Screen Time stretches since the cursors saved at `state_path`:
+/// apps in focus on other synced devices (Biome `App.InFocus/remote/*`; this Mac is already
+/// tracked live) and per-site Safari time from knowledgeC. The first run backfills everything.
+/// Re-sending is harmless (`screen_time` is a ReplacingMergeTree), so cursors may lag.
+pub fn import(device_id: &str, state_path: &Path) -> Vec<usage_model::ScreenTimeBlock> {
+    use std::collections::BTreeMap;
+    use usage_model::ScreenTimeBlock;
+    let mut cursors: BTreeMap<String, i64> =
+        std::fs::read(state_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut out = Vec::new();
+
+    let remote = home().join("Library/Biome/streams/restricted/App.InFocus/remote");
+    for dev in std::fs::read_dir(&remote).into_iter().flatten().flatten() {
+        let id = dev.file_name().to_string_lossy().into_owned();
+        let key = format!("biome:{id}");
+        let since = cursors.get(&key).copied().unwrap_or(0);
+        let mut events = Vec::new();
+        for f in std::fs::read_dir(dev.path()).into_iter().flatten().flatten() {
+            let fresh = f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .is_none_or(|d| d.as_millis() as i64 >= since);
+            if fresh && let Ok(data) = std::fs::read(f.path()) {
+                events.extend(usage_agent::biome::parse_segb(&data));
+            }
+        }
+        let mut max = since;
+        for (bundle_id, start_at, stop_at) in usage_agent::biome::blocks(events) {
+            if stop_at <= since {
+                continue;
+            }
+            max = max.max(stop_at);
+            out.push(ScreenTimeBlock {
+                device_id: device_id.into(), source_device: id.clone(), kind: "app".into(), bundle_id, domain: String::new(), start_at, stop_at,
+            });
+        }
+        cursors.insert(key, max);
+    }
+
+    let since = cursors.get("knowledge:web").copied().unwrap_or(0);
+    match web_usage(since) {
+        Ok(rows) => {
+            let mut max = since;
+            for (bundle_id, domain, start_at, stop_at) in rows {
+                max = max.max(stop_at);
+                out.push(ScreenTimeBlock {
+                    device_id: device_id.into(), source_device: device_id.into(), kind: "web".into(), bundle_id, domain, start_at, stop_at,
+                });
+            }
+            cursors.insert("knowledge:web".into(), max);
+        }
+        Err(e) => log::warn!("knowledgeC web usage: {e} (Full Disk Access?)"),
+    }
+
+    if let Some(dir) = state_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(state_path, serde_json::to_vec(&cursors).unwrap_or_default());
+    out
+}
+
+/// (bundle id, domain, start ms, stop ms) of knowledgeC `/app/webUsage` ending after `since_ms`.
+fn web_usage(since_ms: i64) -> Result<Vec<(String, String, i64, i64)>, rusqlite::Error> {
+    let path = home().join("Library/Application Support/Knowledge/knowledgeC.db");
+    let db = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut q = db.prepare(
+        "SELECT o.ZVALUESTRING, IFNULL(m.ZDKDIGITALHEALTHMETADATAKEY__WEBDOMAIN, ''), o.ZSTARTDATE, o.ZENDDATE \
+         FROM ZOBJECT o LEFT JOIN ZSTRUCTUREDMETADATA m ON o.ZSTRUCTUREDMETADATA = m.Z_PK \
+         WHERE o.ZSTREAMNAME = '/app/webUsage' AND o.ZENDDATE > ?1 AND o.ZENDDATE > o.ZSTARTDATE ORDER BY o.ZENDDATE",
+    )?;
+    let since = since_ms as f64 / 1000.0 - APPLE_EPOCH;
+    let rows = q.query_map([since], |r| {
+        let ms = |x: f64| ((x + APPLE_EPOCH) * 1000.0) as i64;
+        Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, String>(1)?, ms(r.get(2)?), ms(r.get(3)?)))
+    })?;
+    Ok(rows.flatten().filter(|(b, _, s, e)| !b.is_empty() && e - s <= 24 * 3600 * 1000).collect())
+}
+
+/// `--dump-screen-time-import`: what `import` would send, without saving cursors.
+pub fn dump_import(device_id: &str) {
+    let tmp = std::env::temp_dir().join("usage-agent-screentime-dry.json");
+    let _ = std::fs::remove_file(&tmp);
+    let blocks = import(device_id, &tmp);
+    let _ = std::fs::remove_file(&tmp);
+    let mut per: std::collections::BTreeMap<(String, String), (usize, i64)> = Default::default();
+    for b in &blocks {
+        let e = per.entry((b.source_device.clone(), b.kind.clone())).or_default();
+        e.0 += 1;
+        e.1 = e.1.max(b.stop_at);
+    }
+    for ((dev, kind), (n, last)) in per {
+        println!("{dev:<38} {kind:<4} {n:>6} blocks, last {}", fmt_ts(last as f64 / 1000.0));
+    }
+    for b in blocks.iter().rev().take(15) {
+        println!("  {} {:>5}s {} {} {}", fmt_ts(b.start_at as f64 / 1000.0), (b.stop_at - b.start_at) / 1000, &b.source_device[..8.min(b.source_device.len())], b.bundle_id, b.domain);
+    }
+}

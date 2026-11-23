@@ -2,7 +2,7 @@
 //! line. Sent oldest first, in batches, once the server answers again.
 
 use serde::{Deserialize, Serialize};
-use usage_model::{MediaBlock, UsageBatch, UsageBlock};
+use usage_model::{MediaBlock, ScreenTimeBlock, UsageBatch, UsageBlock};
 
 /// One queued line. Untagged, so lines written before media existed (plain blocks) still read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -10,6 +10,8 @@ use usage_model::{MediaBlock, UsageBatch, UsageBlock};
 pub enum Item {
     Usage(UsageBlock),
     Media(MediaBlock),
+    /// Last: has none of `app_name` / `source`, so it never shadows the two above.
+    ScreenTime(ScreenTimeBlock),
 }
 use std::fs;
 use std::io::Write;
@@ -100,9 +102,10 @@ impl Queue {
             match item {
                 Item::Usage(b) => batch.blocks.push(b),
                 Item::Media(m) => batch.media.push(m),
+                Item::ScreenTime(t) => batch.screen_time.push(t),
             }
         }
-        let result = if batch.blocks.is_empty() && batch.media.is_empty() {
+        let result = if batch.blocks.is_empty() && batch.media.is_empty() && batch.screen_time.is_empty() {
             Ok(())
         } else {
             match send(&batch) {

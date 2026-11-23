@@ -88,12 +88,54 @@ impl MediaBlock {
     }
 }
 
+/// A stretch from macOS Screen Time stores, read by the agent: an app in focus on any synced
+/// device (Biome App.InFocus, incl. iPhone/iPad), or time on a website (knowledgeC webUsage).
+/// A row of ClickHouse `screen_time`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "clickhouse", derive(clickhouse::Row))]
+pub struct ScreenTimeBlock {
+    /// The Mac that read it.
+    pub device_id: String,
+    /// The device it happened on: a Biome remote device id, or `device_id` for this Mac.
+    pub source_device: String,
+    /// "app" or "web".
+    pub kind: String,
+    pub bundle_id: String,
+    /// The website for kind "web", else empty.
+    #[serde(default)]
+    pub domain: String,
+    pub start_at: i64,
+    pub stop_at: i64,
+}
+
+impl ScreenTimeBlock {
+    pub fn problem(&self) -> Option<String> {
+        for (name, v) in [("device_id", &self.device_id), ("source_device", &self.source_device), ("bundle_id", &self.bundle_id)] {
+            if v.is_empty() || v.chars().count() > 256 {
+                return Some(format!("screen_time {name} must be 1-256 characters"));
+            }
+        }
+        if self.kind != "app" && self.kind != "web" {
+            return Some("screen_time kind must be app or web".into());
+        }
+        if self.domain.chars().count() > 1024 {
+            return Some("screen_time domain must be at most 1024 characters".into());
+        }
+        if self.stop_at < self.start_at || self.stop_at - self.start_at > 24 * 3600 * 1000 {
+            return Some("screen_time block must run forward and last at most 24 hours".into());
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct UsageBatch {
     #[serde(default)]
     pub blocks: Vec<UsageBlock>,
     #[serde(default)]
     pub media: Vec<MediaBlock>,
+    #[serde(default)]
+    pub screen_time: Vec<ScreenTimeBlock>,
 }
 
 impl UsageBlock {

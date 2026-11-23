@@ -1,4 +1,4 @@
-use usage_model::{MediaBlock, UsageBatch, UsageBlock};
+use usage_model::{MediaBlock, ScreenTimeBlock, UsageBatch, UsageBlock};
 use crate::repository::Store;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -71,17 +71,20 @@ async fn post_usage<S: Store>(
     Json(batch): Json<UsageBatch>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let invalid = |m: String| (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"status": "error", "message": m})));
-    if batch.blocks.len() + batch.media.len() > MAX_BLOCKS {
+    let n = batch.blocks.len() + batch.media.len() + batch.screen_time.len();
+    if n > MAX_BLOCKS {
         return Err(invalid(format!("at most {MAX_BLOCKS} blocks per request")));
     }
-    if let Some(p) = batch.blocks.iter().find_map(UsageBlock::problem).or_else(|| batch.media.iter().find_map(MediaBlock::problem)) {
+    if let Some(p) = batch.blocks.iter().find_map(UsageBlock::problem)
+        .or_else(|| batch.media.iter().find_map(MediaBlock::problem))
+        .or_else(|| batch.screen_time.iter().find_map(ScreenTimeBlock::problem))
+    {
         return Err(invalid(p));
     }
-    if batch.blocks.is_empty() && batch.media.is_empty() {
+    if n == 0 {
         return Ok((StatusCode::CREATED, Json(json!({"status": "success", "saved": 0}))));
     }
-    let n = batch.blocks.len() + batch.media.len();
-    repo.save(batch.blocks, batch.media).await.map_err(|e| {
+    repo.save(batch.blocks, batch.media, batch.screen_time).await.map_err(|e| {
         tracing::error!("Failed to save usage blocks: {e}");
         db_error(StatusCode::INTERNAL_SERVER_ERROR)
     })?;
@@ -107,7 +110,7 @@ mod tests {
         async fn ping(&self) -> Result<(), String> {
             if self.down { Err("secret-host:9000 auth failed for user x".into()) } else { Ok(()) }
         }
-        async fn save(&self, blocks: Vec<UsageBlock>, _media: Vec<MediaBlock>) -> Result<(), String> {
+        async fn save(&self, blocks: Vec<UsageBlock>, _media: Vec<MediaBlock>, _screen_time: Vec<ScreenTimeBlock>) -> Result<(), String> {
             if self.down {
                 return Err("secret-host:9000 auth failed for user x".into());
             }
@@ -124,7 +127,7 @@ mod tests {
     }
 
     fn body() -> Body {
-        Body::from(serde_json::to_string(&UsageBatch { blocks: vec![block()], media: vec![] }).unwrap())
+        Body::from(serde_json::to_string(&UsageBatch { blocks: vec![block()], media: vec![], ..Default::default() }).unwrap())
     }
 
     async fn post(fake: Arc<Fake>, token: Option<&str>, auth: Option<&str>) -> (StatusCode, String) {
@@ -181,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_bad_blocks() {
         let fake = Arc::new(Fake::default());
-        let bad = UsageBatch { blocks: vec![UsageBlock { kind: "nope".into(), ..block() }], media: vec![] };
+        let bad = UsageBatch { blocks: vec![UsageBlock { kind: "nope".into(), ..block() }], media: vec![], ..Default::default() };
         let resp = usage_routes(fake.clone(), None)
             .oneshot(
                 Request::post("/api/usage")

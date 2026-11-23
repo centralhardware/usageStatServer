@@ -40,6 +40,8 @@ fn main() -> ExitCode {
     const FLUSH_EVERY: Duration = Duration::from_secs(60);
     /// Media is sampled less often: finding the tab's domain runs osascript.
     const MEDIA_EVERY: Duration = Duration::from_secs(10);
+    /// Screen Time stores (synced devices, web usage) are re-read this often.
+    const SCREEN_TIME_EVERY: Duration = Duration::from_secs(15 * 60);
 
     let observe = || Observation {
         now_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
@@ -52,6 +54,10 @@ fn main() -> ExitCode {
         let args: Vec<String> = std::env::args().collect();
         let stream = args.get(i + 1).map_or("App.InFocus", String::as_str);
         screentime::dump_biome_raw(stream, args.get(i + 2).map(String::as_str));
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args().any(|a| a == "--dump-screen-time-import") {
+        screentime::dump_import(&mac::device_id());
         return ExitCode::SUCCESS;
     }
     if std::env::args().any(|a| a == "--dump-screen-time") {
@@ -99,6 +105,9 @@ fn main() -> ExitCode {
     let mut media = MediaTracker::new(mac::device_id(), mac::device_name());
     let mut last_media = Instant::now() - MEDIA_EVERY;
     let mut last_flush = Instant::now();
+    // First import a minute after start, so a restart doesn't delay the live tracking.
+    let mut last_screen_time = Instant::now() - SCREEN_TIME_EVERY + Duration::from_secs(60);
+    let screen_time_state = std::path::PathBuf::from(format!("{home}/Library/Application Support/usage-agent/screentime.json"));
     let mut warned_no_url = false;
     loop {
         // Lets AppKit process workspace changes, so frontmostApplication stays current.
@@ -112,6 +121,16 @@ fn main() -> ExitCode {
             let playing = if o.locked { None } else { mac::playing() };
             for m in media.tick(o.now_ms, playing.as_ref(), SLEEP_GAP_MS + MEDIA_EVERY.as_millis() as i64) {
                 queue.push(&Item::Media(m));
+            }
+        }
+        if last_screen_time.elapsed() >= SCREEN_TIME_EVERY {
+            last_screen_time = Instant::now();
+            let blocks = screentime::import(&mac::device_id(), &screen_time_state);
+            if !blocks.is_empty() {
+                log::info!("screen time: {} new blocks", blocks.len());
+            }
+            for b in blocks {
+                queue.push(&Item::ScreenTime(b));
             }
         }
         if last_flush.elapsed() < FLUSH_EVERY {
