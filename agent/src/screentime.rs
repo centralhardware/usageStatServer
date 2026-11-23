@@ -364,7 +364,8 @@ pub fn dump_import(device_id: &str) {
     let tmp = std::env::temp_dir().join("usage-agent-screentime-dry.json");
     let _ = std::fs::remove_file(&tmp);
     let blocks = import(device_id, &tmp);
-    let events = import_events(device_id, &tmp);
+    let mut events = import_events(device_id, &tmp);
+    events.extend(import_biome_events(device_id, &tmp));
     let _ = std::fs::remove_file(&tmp);
     let mut per_stream: std::collections::BTreeMap<&str, usize> = Default::default();
     for e in &events {
@@ -387,5 +388,82 @@ pub fn dump_import(device_id: &str) {
     }
     for b in blocks.iter().rev().take(15) {
         println!("  {} {:>5}s {} {} {}", fmt_ts(b.start_at as f64 / 1000.0), (b.stop_at - b.start_at) / 1000, &b.source_device[..8.min(b.source_device.len())], b.bundle_id, b.domain);
+    }
+}
+
+/// Biome streams kept as generic events (App.InFocus has its own reader → screen_time).
+/// Left out: ProactiveHarvesting.Safari.PageView and App.Intents.Transcript (page/conversation text).
+pub const BIOME_STREAMS: [&str; 12] = [
+    "App.WebUsage", "App.MediaUsage", "App.WebApp.InFocus", "App.MenuItem", "App.DocumentInteraction", "ScreenTime.AppUsage",
+    "Notification.Usage", "Notification.Delivery", "Safari.Navigations", "Screenshots.Screenshot", "Device.Wireless.Bluetooth",
+    "App.Intent",
+];
+/// Most events one run queues, so a backfill can't push the queue past its cap; the rest comes next run.
+const BIOME_BUDGET: usize = 20_000;
+
+pub fn import_biome_events(device_id: &str, state_path: &Path) -> Vec<usage_model::EventBlock> {
+    use std::collections::BTreeMap;
+    let mut cursors: BTreeMap<String, i64> =
+        std::fs::read(state_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let root = home().join("Library/Biome/streams/restricted");
+    let mut out = Vec::new();
+    for stream in BIOME_STREAMS {
+        let base = root.join(stream);
+        let mut dirs = vec![(device_id.to_owned(), base.join("local"))];
+        for d in std::fs::read_dir(base.join("remote")).into_iter().flatten().flatten() {
+            dirs.push((d.file_name().to_string_lossy().into_owned(), d.path()));
+        }
+        for (dev, dir) in dirs {
+            if out.len() >= BIOME_BUDGET {
+                break;
+            }
+            let key = format!("biome:{stream}:{dev}");
+            let since = cursors.get(&key).copied().unwrap_or(0);
+            let mut evs = Vec::new();
+            for f in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let fresh = f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .is_none_or(|d| d.as_millis() as i64 >= since);
+                let Ok(data) = (if fresh { std::fs::read(f.path()) } else { continue }) else { continue };
+                for (at, payload) in usage_agent::biome::records(&data) {
+                    if at <= since {
+                        continue;
+                    }
+                    let Some(mut fields) = usage_agent::biome::decode(payload) else { continue };
+                    fields.truncate(64);
+                    let bundle_id = fields.iter().map(|(_, v)| v).find(|v| looks_like_bundle(v) && v.len() <= 256).cloned().unwrap_or_default();
+                    evs.push(usage_model::EventBlock {
+                        device_id: device_id.into(), source_device: dev.clone(), stream: format!("biome:{stream}"),
+                        bundle_id, value: String::new(), fields, start_at: at, stop_at: at,
+                    });
+                }
+            }
+            evs.sort_by_key(|e| e.start_at);
+            evs.truncate(BIOME_BUDGET - out.len());
+            if let Some(last) = evs.last() {
+                cursors.insert(key, last.start_at);
+            }
+            out.extend(evs);
+        }
+    }
+    save_cursors(state_path, &cursors);
+    out
+}
+
+/// `--dump-biome-decoded <Stream> [device]`: the newest records of a stream, decoded generically.
+pub fn dump_biome_decoded(stream: &str, device: Option<&str>) {
+    let base = home().join("Library/Biome/streams/restricted").join(stream);
+    let dir = device.map_or(base.join("local"), |d| base.join("remote").join(d));
+    let mut recs = Vec::new();
+    for f in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if let Ok(data) = std::fs::read(f.path()) {
+            for (at, p) in usage_agent::biome::records(&data) {
+                recs.push((at, usage_agent::biome::decode(p)));
+            }
+        }
+    }
+    recs.sort_by_key(|r| r.0);
+    println!("{}: {} records", dir.display(), recs.len());
+    for (at, d) in recs.iter().rev().take(8) {
+        println!("{} {:?}", fmt_ts(*at as f64 / 1000.0), d);
     }
 }

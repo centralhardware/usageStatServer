@@ -22,6 +22,98 @@ fn u32_at(b: &[u8], i: usize) -> Option<u32> {
     b.get(i..i + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()))
 }
 
+/// Every written record of a SEGB v2 file: (trailer time in Unix ms, protobuf payload).
+pub fn records(file: &[u8]) -> Vec<(i64, &[u8])> {
+    if file.len() < DATA_START || &file[..4] != b"SEGB" {
+        return vec![];
+    }
+    let count = u32_at(file, 4).unwrap_or(0) as usize;
+    let mut out = Vec::new();
+    let mut start = DATA_START;
+    for i in 0..count {
+        let Some(t) = file.len().checked_sub(16 * (i + 1)) else { break };
+        if t < start {
+            break;
+        }
+        let (Some(end), Some(state)) = (u32_at(file, t), u32_at(file, t + 4)) else { break };
+        let end = DATA_START + end as usize;
+        if end > t || end < start {
+            break;
+        }
+        let at = f64::from_le_bytes(file[t + 8..t + 16].try_into().unwrap());
+        if state == 1 && end >= start + 8 {
+            out.push(((at * 1000.0 + APPLE_EPOCH_MS) as i64, &file[start + 8..end]));
+        }
+        start = (end + 3) & !3;
+    }
+    out
+}
+
+/// A protobuf message without its schema, flattened: ("3", "1"), ("6", "com.apple.Safari"),
+/// nested messages as "2.1". Doubles that look like Apple-epoch times become ISO strings.
+/// None when the bytes are not a well-formed message.
+pub fn decode(b: &[u8]) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    decode_into(b, "", &mut out, 0)?;
+    Some(out)
+}
+
+fn decode_into(b: &[u8], prefix: &str, out: &mut Vec<(String, String)>, depth: usize) -> Option<()> {
+    let mut i = 0;
+    if b.is_empty() || depth > 6 {
+        return None;
+    }
+    while i < b.len() {
+        let key = varint(b, &mut i)?;
+        let (field, wire) = (key >> 3, key & 7);
+        if field == 0 {
+            return None;
+        }
+        let name = if prefix.is_empty() { field.to_string() } else { format!("{prefix}.{field}") };
+        let value = match wire {
+            0 => varint(b, &mut i)?.to_string(),
+            1 => {
+                let raw = b.get(i..i + 8)?;
+                i += 8;
+                let v = f64::from_le_bytes(raw.try_into().ok()?);
+                // 2001-2100 in Apple-epoch seconds: a timestamp.
+                if (0.0..3.2e9).contains(&v) && v.fract() != 0.0 && v > 1e8 {
+                    let ms = (v * 1000.0 + APPLE_EPOCH_MS) as i64;
+                    format!("t:{ms}")
+                } else if v.is_finite() && v.abs() < 1e15 {
+                    v.to_string()
+                } else {
+                    u64::from_le_bytes(raw.try_into().ok()?).to_string()
+                }
+            }
+            2 => {
+                let n = varint(b, &mut i)? as usize;
+                let s = b.get(i..i + n)?;
+                i += n;
+                match std::str::from_utf8(s) {
+                    Ok(t) if !t.is_empty() && t.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => t.chars().take(1024).collect(),
+                    _ => {
+                        let mut nested = Vec::new();
+                        if decode_into(s, &name, &mut nested, depth + 1).is_some() {
+                            out.extend(nested);
+                            continue;
+                        }
+                        s.iter().take(64).map(|x| format!("{x:02x}")).collect()
+                    }
+                }
+            }
+            5 => {
+                let raw = b.get(i..i + 4)?;
+                i += 4;
+                f32::from_le_bytes(raw.try_into().ok()?).to_string()
+            }
+            _ => return None,
+        };
+        out.push((name, value));
+    }
+    Some(())
+}
+
 pub fn parse_segb(file: &[u8]) -> Vec<Event> {
     if file.len() < DATA_START || &file[..4] != b"SEGB" {
         return vec![];
@@ -179,6 +271,20 @@ mod tests {
                 ("com.apple.Terminal".into(), 978_307_360_000, 978_307_390_500),
             ]
         );
+    }
+
+    #[test]
+    fn decodes_generically() {
+        let f = file(&[record("com.apple.Safari", true, 100.5)]);
+        let recs = records(&f);
+        assert_eq!(recs.len(), 1);
+        let d = decode(recs[0].1).unwrap();
+        assert!(d.contains(&("6".into(), "com.apple.Safari".into())));
+        assert!(d.contains(&("3".into(), "1".into())));
+        assert!(d.iter().any(|(k, _)| k == "4"));
+        // nested message
+        let msg = [0x12, 0x03, 0x08, 0x96, 0x01];
+        assert_eq!(decode(&msg).unwrap(), vec![("2.1".into(), "150".into())]);
     }
 
     #[test]

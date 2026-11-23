@@ -56,6 +56,11 @@ fn main() -> ExitCode {
         screentime::dump_biome_raw(stream, args.get(i + 2).map(String::as_str));
         return ExitCode::SUCCESS;
     }
+    if let Some(i) = std::env::args().position(|a| a == "--dump-biome-decoded") {
+        let args: Vec<String> = std::env::args().collect();
+        screentime::dump_biome_decoded(args.get(i + 1).map_or("App.WebUsage", String::as_str), args.get(i + 2).map(String::as_str));
+        return ExitCode::SUCCESS;
+    }
     if std::env::args().any(|a| a == "--dump-screen-time-import") {
         screentime::dump_import(&mac::device_id());
         return ExitCode::SUCCESS;
@@ -137,6 +142,13 @@ fn main() -> ExitCode {
                 log::info!("knowledgeC: {} new events", events.len());
             }
             for e in events {
+                queue.push(&Item::Event(e));
+            }
+            let biome = screentime::import_biome_events(&mac::device_id(), &screen_time_state);
+            if !biome.is_empty() {
+                log::info!("biome: {} new events", biome.len());
+            }
+            for e in biome {
                 queue.push(&Item::Event(e));
             }
         }
