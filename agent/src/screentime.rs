@@ -296,7 +296,7 @@ fn knowledge_events(device_id: &str, since_ms: i64) -> Result<Vec<usage_model::E
     while let Some(r) = rows.next()? {
         let mut obj = std::collections::HashMap::new();
         let mut src = std::collections::HashMap::new();
-        let mut fields = Vec::new();
+        let mut fields: Vec<(String, String)> = Vec::new();
         for (i, name) in names.iter().enumerate() {
             let Some(v) = text(r.get_ref(i)?) else { continue };
             if i < n_obj {
@@ -312,7 +312,11 @@ fn knowledge_events(device_id: &str, since_ms: i64) -> Result<Vec<usage_model::E
         let vs = obj.get("ZVALUESTRING").cloned().unwrap_or_default();
         let vi = obj.get("ZVALUEINTEGER").cloned().unwrap_or_default();
         let src_bundle = src.get("ZBUNDLEID").cloned().unwrap_or_default();
-        let (bundle_id, value) = if !src_bundle.is_empty() {
+        // Some streams keep the app only in metadata (notificationusage.bundleid).
+        let meta_bundle = fields.iter().find(|(k, v)| k.ends_with(".bundleid") && looks_like_bundle(v)).map(|(_, v)| v.to_owned());
+        let (bundle_id, value) = if let Some(b) = meta_bundle.filter(|_| src_bundle.is_empty() && !looks_like_bundle(&vs)) {
+            (b, if vs.is_empty() { vi } else { vs })
+        } else if !src_bundle.is_empty() {
             (src_bundle, if vs.is_empty() { vi } else { vs })
         } else if looks_like_bundle(&vs) {
             (vs, vi)
