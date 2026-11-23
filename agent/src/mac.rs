@@ -157,6 +157,28 @@ pub fn screen_locked() -> bool {
     }
 }
 
+/// Whether this account's session is the one on the console: false while another account is
+/// in front after fast user switching (or at the login window).
+pub fn on_console() -> bool {
+    unsafe {
+        let d = CGSessionCopyCurrentDictionary();
+        if d.is_null() {
+            return false;
+        }
+        let d: CFDictionary<CFString, CFType> = CFDictionary::wrap_under_create_rule(d);
+        d.find(CFString::from_static_string("kCGSSessionOnConsoleKey"))
+            .and_then(|v| v.downcast::<CFBoolean>())
+            .is_none_or(bool::from)
+    }
+}
+
+/// The macOS account the agent runs in (short name), as launchd sets it for the LaunchAgent.
+pub fn user_name() -> String {
+    std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| {
+        std::env::var("HOME").ok().and_then(|h| h.rsplit('/').next().map(str::to_owned)).unwrap_or_default()
+    })
+}
+
 /// The Mac's name as set in System Settings → General → Sharing.
 pub fn device_name() -> String {
     std::process::Command::new("/usr/sbin/scutil")

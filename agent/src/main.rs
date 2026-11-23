@@ -48,6 +48,7 @@ fn main() -> ExitCode {
         app: mac::front_app(),
         idle_secs: mac::idle_seconds(),
         locked: mac::screen_locked(),
+        switched_out: !mac::on_console(),
     };
 
     if let Some(i) = std::env::args().position(|a| a == "--dump-biome") {
@@ -106,8 +107,8 @@ fn main() -> ExitCode {
         .build()
         .into();
 
-    let mut tracker = Tracker::new(mac::device_id(), mac::device_name());
-    let mut media = MediaTracker::new(mac::device_id(), mac::device_name());
+    let mut tracker = Tracker::new(mac::device_id(), mac::device_name(), mac::user_name());
+    let mut media = MediaTracker::new(mac::device_id(), mac::device_name(), mac::user_name());
     let mut last_media = Instant::now() - MEDIA_EVERY;
     let mut last_flush = Instant::now();
     // First import a minute after start, so a restart doesn't delay the live tracking.
@@ -123,7 +124,7 @@ fn main() -> ExitCode {
         }
         if last_media.elapsed() >= MEDIA_EVERY {
             last_media = Instant::now();
-            let playing = if o.locked { None } else { mac::playing() };
+            let playing = if o.locked || o.switched_out { None } else { mac::playing() };
             for m in media.tick(o.now_ms, playing.as_ref(), SLEEP_GAP_MS + MEDIA_EVERY.as_millis() as i64) {
                 queue.push(&Item::Media(m));
             }

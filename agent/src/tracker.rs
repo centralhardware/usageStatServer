@@ -1,7 +1,7 @@
 //! The state machine behind the agent, kept free of macOS calls so it can be tested anywhere.
 //! Each tick it gets what the Mac looks like right now and returns the blocks that just closed.
 
-use usage_model::{AWAY_IDLE, AWAY_LOCK, AWAY_SLEEP, KIND_APP, KIND_AWAY, MediaBlock, UsageBlock};
+use usage_model::{AWAY_IDLE, AWAY_LOCK, AWAY_SLEEP, AWAY_SWITCHED, KIND_APP, KIND_AWAY, MediaBlock, UsageBlock};
 
 /// No input for this long counts as away; the away block starts at the last input.
 pub const IDLE_LIMIT_SECS: f64 = 300.0;
@@ -33,18 +33,21 @@ pub struct Observation {
     pub app: Option<FrontApp>,
     pub idle_secs: f64,
     pub locked: bool,
+    /// Another account is on the console (fast user switching); this one runs in the background.
+    pub switched_out: bool,
 }
 
 pub struct Tracker {
     device: String,
     device_name: String,
+    user_name: String,
     current: Option<UsageBlock>,
     last_tick: Option<i64>,
 }
 
 impl Tracker {
-    pub fn new(device: impl Into<String>, device_name: impl Into<String>) -> Self {
-        Self { device: device.into(), device_name: device_name.into(), current: None, last_tick: None }
+    pub fn new(device: impl Into<String>, device_name: impl Into<String>, user_name: impl Into<String>) -> Self {
+        Self { device: device.into(), device_name: device_name.into(), user_name: user_name.into(), current: None, last_tick: None }
     }
 
     /// The open block, with its stop moved to the last tick; re-sent on every flush.
@@ -54,7 +57,7 @@ impl Tracker {
 
     fn block(&self, kind: &str, bundle: &str, name: &str, at: i64) -> UsageBlock {
         UsageBlock {
-            device_id: self.device.clone(), device_name: self.device_name.clone(), kind: kind.into(), bundle_id: bundle.into(), app_name: name.into(),
+            device_id: self.device.clone(), device_name: self.device_name.clone(), user_name: self.user_name.clone(), kind: kind.into(), bundle_id: bundle.into(), app_name: name.into(),
             start_at: at, stop_at: at, ..Default::default()
         }
     }
@@ -100,7 +103,9 @@ impl Tracker {
         }
         self.last_tick = Some(now);
 
-        if o.locked {
+        if o.switched_out {
+            self.go_away(AWAY_SWITCHED, now, &mut out);
+        } else if o.locked {
             self.go_away(AWAY_LOCK, now, &mut out);
         } else if o.idle_secs >= IDLE_LIMIT_SECS {
             let since = now - (o.idle_secs * 1000.0) as i64;
@@ -164,13 +169,14 @@ pub struct Playing {
 pub struct MediaTracker {
     device: String,
     device_name: String,
+    user_name: String,
     current: Option<MediaBlock>,
     last_tick: Option<i64>,
 }
 
 impl MediaTracker {
-    pub fn new(device: impl Into<String>, device_name: impl Into<String>) -> Self {
-        Self { device: device.into(), device_name: device_name.into(), current: None, last_tick: None }
+    pub fn new(device: impl Into<String>, device_name: impl Into<String>, user_name: impl Into<String>) -> Self {
+        Self { device: device.into(), device_name: device_name.into(), user_name: user_name.into(), current: None, last_tick: None }
     }
 
     pub fn current(&self) -> Option<&MediaBlock> {
@@ -200,7 +206,7 @@ impl MediaTracker {
             (Some(p), _) => {
                 self.close(now, &mut out);
                 self.current = Some(MediaBlock {
-                    device_id: self.device.clone(), device_name: self.device_name.clone(), source: p.source.clone(),
+                    device_id: self.device.clone(), device_name: self.device_name.clone(), user_name: self.user_name.clone(), source: p.source.clone(),
                     bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), title: p.title.clone(),
                     artist: p.artist.clone(), start_at: now, stop_at: now,
                 });
@@ -265,7 +271,7 @@ mod tests {
         let mut s = from;
         while s <= to {
             let idle_secs = idle_from.map_or(0.0, |i| (s - i) as f64);
-            out.extend(t.tick(&Observation { now_ms: s * 1000, app: a.clone(), idle_secs, locked }));
+            out.extend(t.tick(&Observation { now_ms: s * 1000, app: a.clone(), idle_secs, locked, switched_out: false }));
             s += 2;
         }
         out
@@ -273,7 +279,7 @@ mod tests {
 
     #[test]
     fn switching_apps_closes_blocks() {
-        let mut t = Tracker::new("uuid", "mac");
+        let mut t = Tracker::new("uuid", "mac", "alex");
         assert!(run(&mut t, 0, 10, app("a", "x"), None, false).is_empty());
         let out = run(&mut t, 12, 20, app("b", "y"), None, false);
         assert_eq!(out.len(), 1);
@@ -282,8 +288,22 @@ mod tests {
     }
 
     #[test]
+    fn switched_out_account_is_away_and_tagged() {
+        let mut t = Tracker::new("uuid", "mac", "working");
+        run(&mut t, 0, 10, app("a", "x"), None, false);
+        let mut out = Vec::new();
+        for s in (12..=20).step_by(2) {
+            out.extend(t.tick(&Observation { now_ms: s * 1000, app: app("a", "x"), idle_secs: 0.0, locked: false, switched_out: true }));
+        }
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].bundle_id.as_str(), out[0].user_name.as_str()), ("a", "working"));
+        let cur = t.current().unwrap();
+        assert_eq!((cur.kind.as_str(), cur.bundle_id.as_str(), cur.user_name.as_str()), (KIND_AWAY, AWAY_SWITCHED, "working"));
+    }
+
+    #[test]
     fn short_blocks_are_dropped_and_early_titles_rename() {
-        let mut t = Tracker::new("uuid", "mac");
+        let mut t = Tracker::new("uuid", "mac", "alex");
         run(&mut t, 0, 0, app("a", ""), None, false);
         assert!(run(&mut t, 1, 1, app("b", ""), None, false).is_empty()); // a lasted 1 s
         run(&mut t, 3, 3, app("b", "loaded"), None, false); // within settle: renamed
@@ -295,7 +315,7 @@ mod tests {
 
     #[test]
     fn idle_is_backdated_and_ends_on_input() {
-        let mut t = Tracker::new("uuid", "mac");
+        let mut t = Tracker::new("uuid", "mac", "alex");
         run(&mut t, 0, 50, app("a", ""), None, false);
         // No input from 50 s on: away once 5 min have passed, starting at 50 s.
         let out = run(&mut t, 52, 400, app("a", ""), Some(50), false);
@@ -308,7 +328,7 @@ mod tests {
 
     #[test]
     fn idle_then_lock_splits_and_sleep_gap_is_away() {
-        let mut t = Tracker::new("uuid", "mac");
+        let mut t = Tracker::new("uuid", "mac", "alex");
         run(&mut t, 0, 50, app("a", ""), None, false);
         run(&mut t, 52, 400, app("a", ""), Some(50), false);
         let out = run(&mut t, 402, 402, app("a", ""), Some(50), true);
@@ -330,7 +350,7 @@ mod tests {
 
     #[test]
     fn media_blocks_follow_source() {
-        let mut m = MediaTracker::new("uuid", "mac");
+        let mut m = MediaTracker::new("uuid", "mac", "alex");
         let yt = Playing { bundle_id: "com.apple.Safari".into(), app_name: "Safari".into(), source: "youtube.com".into(), ..Default::default() };
         let nf = Playing { source: "netflix.com".into(), ..yt.clone() };
         assert!(m.tick(0, Some(&yt), 30_000).is_empty());
@@ -370,7 +390,7 @@ mod tests {
 
     #[test]
     fn long_blocks_are_cut() {
-        let mut t = Tracker::new("uuid", "mac");
+        let mut t = Tracker::new("uuid", "mac", "alex");
         let out = run(&mut t, 0, 3700, app("a", ""), None, false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].length_ms(), MAX_BLOCK_MS);
