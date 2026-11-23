@@ -99,7 +99,7 @@ static int alive(pid_t pid) {
 }
 
 /* Temporary: each task file's mtime and the strings in it, to learn how the task manager
- * marks the front task. Logged on every change of the detected state, at most 30 times. */
+ * marks the front task. Logged on each of the first 30 ticks (15 minutes). */
 static void log_task_files(void) {
     static int left = 30;
     if (left-- <= 0) return;
@@ -305,10 +305,8 @@ static void daemon_loop(void) {
         }
         State st;
         current_state(&st);
-        if (!state_eq(&st, &cur.state)) {
-            logf_("now: %s \"%s\"", st.bundle_id, st.title);
-            log_task_files();
-        }
+        if (!state_eq(&st, &cur.state)) logf_("now: %s \"%s\"", st.bundle_id, st.title);
+        log_task_files();
         if (!cur.state.bundle_id[0]) {
             cur.state = st;
             cur.start_at = wall;
