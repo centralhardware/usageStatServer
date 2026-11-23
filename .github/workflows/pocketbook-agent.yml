@@ -1,0 +1,28 @@
+name: PocketBook agent
+
+on:
+  push:
+    branches: [main]
+    paths: ['pocketbook-agent/**', '.github/workflows/pocketbook-agent.yml']
+  pull_request:
+    paths: ['pocketbook-agent/**', '.github/workflows/pocketbook-agent.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test
+        working-directory: pocketbook-agent
+        run: sudo apt-get install -y libcurl4-openssl-dev && make test
+      - name: Fetch SDK (B288, firmware 6.x)
+        run: git clone --depth 1 --branch 6.5 https://github.com/pocketbook/SDK_6.3.0.git "$RUNNER_TEMP/sdk"
+      - name: Cross-compile
+        working-directory: pocketbook-agent
+        run: |
+          make SDK="$RUNNER_TEMP/sdk/SDK-B288"
+          file usage-agent.app
+      - uses: actions/upload-artifact@v7
+        with:
+          name: usage-agent-pocketbook
+          path: pocketbook-agent/usage-agent.app
