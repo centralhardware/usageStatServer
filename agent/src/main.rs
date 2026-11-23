@@ -48,6 +48,12 @@ fn main() -> ExitCode {
         locked: mac::screen_locked(),
     };
 
+    if let Some(i) = std::env::args().position(|a| a == "--dump-biome") {
+        let args: Vec<String> = std::env::args().collect();
+        let stream = args.get(i + 1).map_or("App.InFocus", String::as_str);
+        screentime::dump_biome_raw(stream, args.get(i + 2).map(String::as_str));
+        return ExitCode::SUCCESS;
+    }
     if std::env::args().any(|a| a == "--dump-screen-time") {
         screentime::dump();
         return ExitCode::SUCCESS;

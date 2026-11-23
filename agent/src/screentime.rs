@@ -133,3 +133,34 @@ fn scan(dir: &Path) -> (usize, u64, String) {
     let newest = newest.duration_since(SystemTime::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     (files, bytes, if newest > 0.0 { fmt_ts(newest) } else { "-".into() })
 }
+
+/// `--dump-biome <Stream> [remote-device-id]`: hex of the newest SEGB file's head and tail, to learn the format.
+pub fn dump_biome_raw(stream: &str, device: Option<&str>) {
+    let base = home().join("Library/Biome/streams/restricted").join(stream);
+    let dir = match device {
+        Some(d) => base.join("remote").join(d),
+        None => base.join("local"),
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    files.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    let Some(path) = files.last() else { return println!("no files in {}", dir.display()) };
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => return println!("{}: {e}", path.display()),
+    };
+    let used = data.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    println!("{} size={} used={}", path.display(), data.len(), used);
+    println!("-- head");
+    hex(&data[..data.len().min(768)], 0);
+    let tail = used.saturating_sub(512);
+    println!("-- tail (last non-zero bytes)");
+    hex(&data[tail..used], tail);
+}
+
+fn hex(b: &[u8], base: usize) {
+    for (i, row) in b.chunks(16).enumerate() {
+        let h: Vec<_> = row.iter().map(|x| format!("{x:02x}")).collect();
+        let a: String = row.iter().map(|&x| if (0x20..0x7f).contains(&x) { x as char } else { '.' }).collect();
+        println!("{:06x}  {:<47}  {a}", base + i * 16, h.join(" "));
+    }
+}
