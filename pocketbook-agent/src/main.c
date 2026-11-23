@@ -246,6 +246,60 @@ static void flush(const Block *open_block) {
     free(body);
 }
 
+static void log_file(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) { logf_("  %s: missing", path); return; }
+    char buf[512] = "";
+    FILE *f = fopen(path, "r");
+    if (f && S_ISREG(st.st_mode)) {
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        for (size_t i = 0; i < n; i++) if (buf[i] == '\n' || buf[i] == 0) buf[i] = '|';
+    }
+    if (f) fclose(f);
+    logf_("  %s: mtime %ld size %ld: %s", path, (long)st.st_mtime, (long)st.st_size, buf);
+}
+
+static void log_dir(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) { logf_("  %s/: missing", path); return; }
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
+        char p[512];
+        snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+        log_file(p);
+    }
+    closedir(d);
+}
+
+/* Diagnostic dump (temporary): where the firmware might say which book is open. */
+static void log_diagnostics(void) {
+    logf_("diag: files");
+    log_file("/tmp/.current");
+    log_file("/tmp/history.txt");
+    log_dir("/var/run/task");
+    log_dir("/mnt/ext1/system/state");
+    log_dir("/mnt/ext1/system/explorer-3");
+    logf_("diag: processes");
+    DIR *proc = opendir("/proc");
+    struct dirent *e;
+    while (proc && (e = readdir(proc))) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char path[64], buf[600];
+        snprintf(path, sizeof path, "/proc/%s/cmdline", e->d_name);
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) continue;
+        ssize_t n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        if (n <= 0) continue; /* kernel thread */
+        for (ssize_t i = 0; i < n; i++) if (!buf[i]) buf[i] = ' ';
+        buf[n] = 0;
+        logf_("  %s: %s", e->d_name, buf);
+    }
+    if (proc) closedir(proc);
+}
+
 static void daemon_loop(void) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     logf_("started as %s, sending to %s", device.device_id, server_url);
@@ -255,7 +309,11 @@ static void daemon_loop(void) {
     Block cur = {0};
     int64_t last_wall = now_ms(CLOCK_REALTIME), last_mono = now_ms(CLOCK_MONOTONIC);
     int64_t last_send = 0;
+    int tick = 0;
     for (;;) {
+        /* 1 and 3 minutes after start: open a book in between to see what changes. */
+        if (tick == 2 || tick == 6) log_diagnostics();
+        tick++;
         int64_t wall = now_ms(CLOCK_REALTIME), mono = now_ms(CLOCK_MONOTONIC);
         int64_t slept = suspended_ms(wall - last_wall, mono - last_mono, SUSPEND_THRESHOLD_MS);
         int woke = 0;
