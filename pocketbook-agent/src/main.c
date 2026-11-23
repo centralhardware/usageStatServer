@@ -35,6 +35,8 @@
 static char server_url[256];
 static char token[128];
 static Device device = {"pocketbook", "PocketBook"};
+/* Longest sleep inside an open book still counted as reading (config reading_gap_s). */
+static int64_t reading_gap_s = 600;
 
 static void logf_(const char *fmt, ...) {
     FILE *f = fopen(LOG_PATH, "a");
@@ -71,6 +73,7 @@ static int load_config(void) {
         if (!strcmp(k, "server_url")) snprintf(server_url, sizeof server_url, "%s", v);
         else if (!strcmp(k, "token")) snprintf(token, sizeof token, "%s", v);
         else if (!strcmp(k, "device_id")) snprintf(device.device_id, sizeof device.device_id, "%s", v);
+        else if (!strcmp(k, "reading_gap_s")) reading_gap_s = atoll(v);
         else if (!strcmp(k, "device_name")) snprintf(device.device_name, sizeof device.device_name, "%s", v);
     }
     fclose(f);
@@ -246,6 +249,10 @@ static void daemon_loop(void) {
         int64_t wall = now_ms(CLOCK_REALTIME), mono = now_ms(CLOCK_MONOTONIC);
         int64_t slept = suspended_ms(wall - last_wall, mono - last_mono, SUSPEND_THRESHOLD_MS);
         int woke = 0;
+        if (slept) woke = 1;
+        /* The firmware suspends the device a few seconds after each page turn, so while a
+         * book is open a short sleep is reading, not time away: the block goes on. */
+        if (slept && cur.state.title[0] && slept <= reading_gap_s * 1000) slept = 0;
         if (slept && cur.state.bundle_id[0]) {
             /* The open block ended when the device went to sleep, roughly at the last tick. */
             cur.stop_at = last_wall;
@@ -253,7 +260,6 @@ static void daemon_loop(void) {
             Block s = {{KIND_AWAY, AWAY_SLEEP, AWAY_SLEEP, ""}, last_wall, wall - (mono - last_mono)};
             spool(&s);
             memset(&cur, 0, sizeof cur);
-            woke = 1;
         }
         State st;
         current_state(&st);

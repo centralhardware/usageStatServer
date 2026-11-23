@@ -17,7 +17,9 @@ sends it back to the background. Every 30 s it asks:
   book on their command line and `/var/run/task/<pid>` mtimes don't follow switching either;
 - the book: the one the active subtask registered, else `/tmp/.current` (written by the firmware
   on open) while the app that was in front when it changed stays in front;
-- a jump of wall-clock time past monotonic time: the device slept.
+- a jump of wall-clock time past monotonic time: the device slept. The firmware suspends a few
+  seconds after every page turn, so with a book open a sleep up to `reading_gap_s` (default 600)
+  counts as reading and the block goes on; longer ones become `away`/`sleep`.
 
 Closed blocks are spooled to a file and sent at start, every 5 minutes and on waking, retrying
 every 30 s for 5 minutes after a failure (Wi-Fi takes a while to come back after sleep). The
@@ -33,6 +35,8 @@ agent never turns Wi-Fi on itself.
    token=<API_TOKEN>
    device_id=pocketbook-619
    device_name=PocketBook 619
+   # optional: longest sleep inside a book still counted as reading
+   reading_gap_s=600
    ```
 3. Eject, open Applications → usage-agent. After a reboot, tap it again. Closing it in the task
    manager stops it.
