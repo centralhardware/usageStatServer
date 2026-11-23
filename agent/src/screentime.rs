@@ -220,11 +220,122 @@ pub fn import(device_id: &str, state_path: &Path) -> Vec<usage_model::ScreenTime
         }
     }
 
+    save_cursors(state_path, &cursors);
+    out
+}
+
+/// knowledgeC streams kept as generic events.
+pub const EVENT_STREAMS: [&str; 5] = ["/notification/usage", "/display/isBacklit", "/app/mediaUsage", "/app/intents", "/bluetooth/isConnected"];
+
+/// New knowledgeC events (`EVENT_STREAMS`) since the cursor in `state_path`; first run backfills.
+pub fn import_events(device_id: &str, state_path: &Path) -> Vec<usage_model::EventBlock> {
+    use std::collections::BTreeMap;
+    let mut cursors: BTreeMap<String, i64> =
+        std::fs::read(state_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let since = cursors.get("knowledge:events").copied().unwrap_or(0);
+    let out = match knowledge_events(device_id, since) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("knowledgeC events: {e} (Full Disk Access?)");
+            eprintln!("knowledgeC events: {e}");
+            return vec![];
+        }
+    };
+    if let Some(max) = out.iter().map(|e| e.stop_at).max() {
+        cursors.insert("knowledge:events".into(), max);
+    }
+    save_cursors(state_path, &cursors);
+    out
+}
+
+fn save_cursors(state_path: &Path, cursors: &std::collections::BTreeMap<String, i64>) {
     if let Some(dir) = state_path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(state_path, serde_json::to_vec(&cursors).unwrap_or_default());
-    out
+    let _ = std::fs::write(state_path, serde_json::to_vec(cursors).unwrap_or_default());
+}
+
+/// "Z_DKINTENTMETADATAKEY__INTENTCLASS" -> "intent.intentclass".
+fn field_name(col: &str) -> String {
+    let c = col.strip_prefix("Z_DK").or_else(|| col.strip_prefix('Z')).unwrap_or(col);
+    c.replacen("METADATAKEY__", ".", 1).to_lowercase()
+}
+
+fn looks_like_bundle(s: &str) -> bool {
+    s.contains('.') && !s.contains(' ') && !s.contains('/')
+}
+
+fn knowledge_events(device_id: &str, since_ms: i64) -> Result<Vec<usage_model::EventBlock>, rusqlite::Error> {
+    use rusqlite::types::ValueRef;
+    let path = home().join("Library/Application Support/Knowledge/knowledgeC.db");
+    let db = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let cols = |t: &str| -> Result<usize, rusqlite::Error> {
+        let mut q = db.prepare(&format!("PRAGMA table_info({t})"))?;
+        let n = q.query_map([], |_| Ok(()))?.count();
+        Ok(n)
+    };
+    let (n_obj, n_src) = (cols("ZOBJECT")?, cols("ZSOURCE")?);
+    let streams = EVENT_STREAMS.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(",");
+    let mut q = db.prepare(&format!(
+        "SELECT o.*, s.*, m.* FROM ZOBJECT o LEFT JOIN ZSOURCE s ON o.ZSOURCE = s.Z_PK \
+         LEFT JOIN ZSTRUCTUREDMETADATA m ON o.ZSTRUCTUREDMETADATA = m.Z_PK \
+         WHERE o.ZSTREAMNAME IN ({streams}) AND o.ZENDDATE > ?1 ORDER BY o.ZENDDATE"
+    ))?;
+    let names: Vec<String> = q.column_names().into_iter().map(str::to_owned).collect();
+    let since = since_ms as f64 / 1000.0 - APPLE_EPOCH;
+    let text = |v: ValueRef| -> Option<String> {
+        match v {
+            ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()).filter(|s| !s.is_empty()),
+            ValueRef::Integer(i) => Some(i.to_string()),
+            ValueRef::Real(f) => Some(f.to_string()),
+            _ => None,
+        }
+    };
+    let mut rows = q.query([since])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let mut obj = std::collections::HashMap::new();
+        let mut src = std::collections::HashMap::new();
+        let mut fields = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let Some(v) = text(r.get_ref(i)?) else { continue };
+            if i < n_obj {
+                obj.insert(name.as_str(), v);
+            } else if i < n_obj + n_src {
+                src.insert(name.as_str(), v);
+            } else if !matches!(name.as_str(), "Z_PK" | "Z_ENT" | "Z_OPT") && fields.len() < 64 {
+                fields.push((field_name(name), v.chars().take(4096).collect()));
+            }
+        }
+        let num = |k: &str| obj.get(k).and_then(|v| v.parse::<f64>().ok());
+        let (Some(stream), Some(start), Some(end)) = (obj.get("ZSTREAMNAME").cloned(), num("ZSTARTDATE"), num("ZENDDATE")) else { continue };
+        let vs = obj.get("ZVALUESTRING").cloned().unwrap_or_default();
+        let vi = obj.get("ZVALUEINTEGER").cloned().unwrap_or_default();
+        let src_bundle = src.get("ZBUNDLEID").cloned().unwrap_or_default();
+        let (bundle_id, value) = if !src_bundle.is_empty() {
+            (src_bundle, if vs.is_empty() { vi } else { vs })
+        } else if looks_like_bundle(&vs) {
+            (vs, vi)
+        } else {
+            (String::new(), if vs.is_empty() { vi } else { vs })
+        };
+        let ms = |x: f64| ((x + APPLE_EPOCH) * 1000.0) as i64;
+        let (start_at, stop_at) = (ms(start), ms(end.max(start)));
+        if stop_at - start_at > 7 * 24 * 3600 * 1000 {
+            continue;
+        }
+        out.push(usage_model::EventBlock {
+            device_id: device_id.into(),
+            source_device: src.get("ZDEVICEID").cloned().unwrap_or_else(|| device_id.into()),
+            stream,
+            bundle_id: bundle_id.chars().take(256).collect(),
+            value: value.chars().take(1024).collect(),
+            fields,
+            start_at,
+            stop_at,
+        });
+    }
+    Ok(out)
 }
 
 /// (bundle id, domain, start ms, stop ms) of knowledgeC `/app/webUsage` ending after `since_ms`.
@@ -249,7 +360,18 @@ pub fn dump_import(device_id: &str) {
     let tmp = std::env::temp_dir().join("usage-agent-screentime-dry.json");
     let _ = std::fs::remove_file(&tmp);
     let blocks = import(device_id, &tmp);
+    let events = import_events(device_id, &tmp);
     let _ = std::fs::remove_file(&tmp);
+    let mut per_stream: std::collections::BTreeMap<&str, usize> = Default::default();
+    for e in &events {
+        *per_stream.entry(e.stream.as_str()).or_default() += 1;
+    }
+    for (s, n) in per_stream {
+        println!("event {s:<32} {n:>6}");
+    }
+    for e in events.iter().rev().take(10) {
+        println!("  {} {} {} {:?} {:?}", fmt_ts(e.start_at as f64 / 1000.0), e.stream, e.bundle_id, e.value, e.fields);
+    }
     let mut per: std::collections::BTreeMap<(String, String), (usize, i64)> = Default::default();
     for b in &blocks {
         let e = per.entry((b.source_device.clone(), b.kind.clone())).or_default();

@@ -132,6 +132,13 @@ fn main() -> ExitCode {
             for b in blocks {
                 queue.push(&Item::ScreenTime(b));
             }
+            let events = screentime::import_events(&mac::device_id(), &screen_time_state);
+            if !events.is_empty() {
+                log::info!("knowledgeC: {} new events", events.len());
+            }
+            for e in events {
+                queue.push(&Item::Event(e));
+            }
         }
         if last_flush.elapsed() < FLUSH_EVERY {
             continue;

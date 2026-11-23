@@ -1,4 +1,4 @@
-use usage_model::{MediaBlock, ScreenTimeBlock, UsageBatch, UsageBlock};
+use usage_model::{EventBlock, MediaBlock, ScreenTimeBlock, UsageBatch, UsageBlock};
 use crate::repository::Store;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -71,20 +71,21 @@ async fn post_usage<S: Store>(
     Json(batch): Json<UsageBatch>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let invalid = |m: String| (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"status": "error", "message": m})));
-    let n = batch.blocks.len() + batch.media.len() + batch.screen_time.len();
+    let n = batch.len();
     if n > MAX_BLOCKS {
         return Err(invalid(format!("at most {MAX_BLOCKS} blocks per request")));
     }
     if let Some(p) = batch.blocks.iter().find_map(UsageBlock::problem)
         .or_else(|| batch.media.iter().find_map(MediaBlock::problem))
         .or_else(|| batch.screen_time.iter().find_map(ScreenTimeBlock::problem))
+        .or_else(|| batch.events.iter().find_map(EventBlock::problem))
     {
         return Err(invalid(p));
     }
     if n == 0 {
         return Ok((StatusCode::CREATED, Json(json!({"status": "success", "saved": 0}))));
     }
-    repo.save(batch.blocks, batch.media, batch.screen_time).await.map_err(|e| {
+    repo.save(batch).await.map_err(|e| {
         tracing::error!("Failed to save usage blocks: {e}");
         db_error(StatusCode::INTERNAL_SERVER_ERROR)
     })?;
@@ -110,7 +111,8 @@ mod tests {
         async fn ping(&self) -> Result<(), String> {
             if self.down { Err("secret-host:9000 auth failed for user x".into()) } else { Ok(()) }
         }
-        async fn save(&self, blocks: Vec<UsageBlock>, _media: Vec<MediaBlock>, _screen_time: Vec<ScreenTimeBlock>) -> Result<(), String> {
+        async fn save(&self, batch: UsageBatch) -> Result<(), String> {
+            let blocks = batch.blocks;
             if self.down {
                 return Err("secret-host:9000 auth failed for user x".into());
             }

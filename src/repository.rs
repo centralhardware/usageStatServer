@@ -1,12 +1,12 @@
 use crate::titles::{self, Rule};
 use clickhouse::Client;
 use std::sync::{Arc, RwLock};
-use usage_model::{MediaBlock, ScreenTimeBlock, UsageBlock};
+use usage_model::{UsageBatch, UsageBlock};
 
 /// What the routes need from storage, so they can be tested against a fake.
 pub trait Store: Send + Sync + 'static {
     fn ping(&self) -> impl Future<Output = Result<(), String>> + Send;
-    fn save(&self, blocks: Vec<UsageBlock>, media: Vec<MediaBlock>, screen_time: Vec<ScreenTimeBlock>) -> impl Future<Output = Result<(), String>> + Send;
+    fn save(&self, batch: UsageBatch) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 impl Store for UsageRepository {
@@ -14,7 +14,8 @@ impl Store for UsageRepository {
         self.client.query("SELECT 1").execute().await.map_err(|e| e.to_string())
     }
 
-    async fn save(&self, mut blocks: Vec<UsageBlock>, media: Vec<MediaBlock>, screen_time: Vec<ScreenTimeBlock>) -> Result<(), String> {
+    async fn save(&self, batch: UsageBatch) -> Result<(), String> {
+        let UsageBatch { mut blocks, media, screen_time, events } = batch;
         self.fill_subjects(&mut blocks);
         if !blocks.is_empty() {
             self.insert("mac_usage", &blocks).await.map_err(|e| e.to_string())?;
@@ -24,6 +25,9 @@ impl Store for UsageRepository {
         }
         if !screen_time.is_empty() {
             self.insert("screen_time", &screen_time).await.map_err(|e| e.to_string())?;
+        }
+        if !events.is_empty() {
+            self.insert("events", &events).await.map_err(|e| e.to_string())?;
         }
         Ok(())
     }

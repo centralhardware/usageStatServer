@@ -18,6 +18,7 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (10, "clear_title_rules", include_str!("../migrations/V10__clear_title_rules.sql")),
     (11, "reseed_title_rules", include_str!("../migrations/V11__reseed_title_rules.sql")),
     (12, "create_screen_time_table", include_str!("../migrations/V12__create_screen_time_table.sql")),
+    (13, "create_events_table", include_str!("../migrations/V13__create_events_table.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]

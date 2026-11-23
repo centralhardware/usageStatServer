@@ -128,6 +128,50 @@ impl ScreenTimeBlock {
     }
 }
 
+/// One event from another macOS store (knowledgeC streams: notifications, screen on/off, media,
+/// app intents, Bluetooth). A row of ClickHouse `events`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "clickhouse", derive(clickhouse::Row))]
+pub struct EventBlock {
+    /// The Mac that read it.
+    pub device_id: String,
+    /// The device it happened on (a synced device's id, or `device_id`).
+    pub source_device: String,
+    /// The store's stream, e.g. "/notification/usage".
+    pub stream: String,
+    /// The app it concerns; empty when none.
+    #[serde(default)]
+    pub bundle_id: String,
+    /// The stream's own value: notification action, 1/0 for on/off states, a device name.
+    #[serde(default)]
+    pub value: String,
+    /// Every other non-empty attribute the store keeps for it (ClickHouse `Map`).
+    #[serde(default)]
+    pub fields: Vec<(String, String)>,
+    pub start_at: i64,
+    pub stop_at: i64,
+}
+
+impl EventBlock {
+    pub fn problem(&self) -> Option<String> {
+        for (name, v) in [("device_id", &self.device_id), ("source_device", &self.source_device), ("stream", &self.stream)] {
+            if v.is_empty() || v.chars().count() > 256 {
+                return Some(format!("event {name} must be 1-256 characters"));
+            }
+        }
+        if self.bundle_id.chars().count() > 256 || self.value.chars().count() > 1024 {
+            return Some("event bundle_id/value too long".into());
+        }
+        if self.fields.len() > 64 || self.fields.iter().any(|(k, v)| k.chars().count() > 256 || v.chars().count() > 4096) {
+            return Some("event fields: at most 64, keys 256 and values 4096 characters".into());
+        }
+        if self.stop_at < self.start_at || self.stop_at - self.start_at > 7 * 24 * 3600 * 1000 {
+            return Some("event must run forward and last at most 7 days".into());
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct UsageBatch {
     #[serde(default)]
@@ -136,6 +180,18 @@ pub struct UsageBatch {
     pub media: Vec<MediaBlock>,
     #[serde(default)]
     pub screen_time: Vec<ScreenTimeBlock>,
+    #[serde(default)]
+    pub events: Vec<EventBlock>,
+}
+
+impl UsageBatch {
+    pub fn len(&self) -> usize {
+        self.blocks.len() + self.media.len() + self.screen_time.len() + self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl UsageBlock {
