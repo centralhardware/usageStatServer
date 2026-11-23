@@ -31,6 +31,7 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (23, "create_view_web_apps_focus", include_str!("../migrations/V23__create_view_web_apps_focus.sql")),
     (24, "create_view_media_usage_biome", include_str!("../migrations/V24__create_view_media_usage_biome.sql")),
     (25, "create_view_screentime_app_usage", include_str!("../migrations/V25__create_view_screentime_app_usage.sql")),
+    (26, "teams_title_rules", include_str!("../migrations/V26__teams_title_rules.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]

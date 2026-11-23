@@ -97,10 +97,10 @@ pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> Parsed {
 mod tests {
     use super::*;
 
-    /// The rules V11 inserts, read from the migration itself: ('bundle', 'pattern') tuples with
-    /// ClickHouse string escaping (\\ → \\ in the regex).
+    /// The rules V11 and V26 insert, read from the migrations themselves: ('bundle', 'pattern')
+    /// tuples with ClickHouse string escaping (\\ → \\ in the regex).
     fn seed() -> Vec<Rule> {
-        let sql = include_str!("../migrations/V11__reseed_title_rules.sql");
+        let sql = [include_str!("../migrations/V11__reseed_title_rules.sql"), include_str!("../migrations/V26__teams_title_rules.sql")].concat();
         let rules: Vec<Rule> = sql
             .lines()
             .map(str::trim)
@@ -112,7 +112,7 @@ mod tests {
                 Rule::new(b, &p.replace("\\\\", "\\"), prio.trim_end_matches(')').parse().unwrap()).unwrap()
             })
             .collect();
-        assert_eq!(rules.len(), 14);
+        assert_eq!(rules.len(), 16);
         let mut rules = rules;
         rules.sort_by_key(|r| r.priority);
         rules
@@ -177,6 +177,20 @@ mod tests {
         assert_eq!(p(S, "Tool to track computer/app usage? : r/macsysadmin"), pair("Tool to track computer/app usage?", "r/macsysadmin"));
         assert_eq!(p(S, "Messages - Telegram - Dashboards - Grafana"), pair("Messages - Telegram - Dashboards", "Grafana"));
         assert_eq!(f("com.apple.mail", "processed — iCloud – 0 messages"), kv(&[("messages", "0")]));
+    }
+
+    #[test]
+    fn teams() {
+        const M: &str = "com.microsoft.teams2";
+        let chat = "Chat | Jane Doe | contoso | a.b@example.com";
+        assert_eq!(p(M, chat), pair("Jane Doe", "contoso"));
+        assert_eq!(f(M, chat), kv(&[("section", "Chat"), ("account", "a.b@example.com")]));
+        let long = "Chat | Project X - phase 2 rollout | contoso | a.b@example.com";
+        assert_eq!(p(M, long), pair("Project X - phase 2 rollout", "contoso"));
+        let meeting = "Weekly Team Meeting | contoso | a.b@example.com";
+        assert_eq!(p(M, meeting), pair("Weekly Team Meeting", "contoso"));
+        assert_eq!(f(M, meeting), kv(&[("account", "a.b@example.com")]));
+        assert_eq!(p(M, "Calendar | contoso | a.b@example.com"), pair("Calendar", "contoso"));
     }
 
     #[test]
