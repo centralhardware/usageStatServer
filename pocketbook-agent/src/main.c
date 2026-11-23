@@ -87,6 +87,45 @@ static int64_t mtime_of(const char *path) {
 
 /* The foreground task: the firmware's task manager touches /var/run/task/<pid> when a task
  * comes to the front, so the newest entry of a live process is the one on screen. */
+/* A running process: zombies (an app that just exited) have an empty cmdline. */
+static int alive(pid_t pid) {
+    char p[64], c;
+    snprintf(p, sizeof p, "/proc/%d/cmdline", (int)pid);
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, &c, 1);
+    close(fd);
+    return n == 1;
+}
+
+/* Temporary: each task file's mtime and the strings in it, to learn how the task manager
+ * marks the front task. Logged on every change of the detected state, at most 30 times. */
+static void log_task_files(void) {
+    static int left = 30;
+    if (left-- <= 0) return;
+    DIR *d = opendir(TASK_DIR);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[300], buf[256], out[512];
+        snprintf(p, sizeof p, TASK_DIR "/%s", e->d_name);
+        FILE *f = fopen(p, "rb");
+        if (!f) continue;
+        size_t n = fread(buf, 1, sizeof buf, f);
+        fclose(f);
+        size_t o = 0;
+        for (size_t i = 0; i < n && o + 4 < sizeof out; i++) {
+            unsigned char c = (unsigned char)buf[i];
+            o += (size_t)snprintf(out + o, sizeof out - o, "%02x", c);
+        }
+        out[o] = 0;
+        logf_("  task %s alive=%d mtime=%lld %s", e->d_name, alive(atoi(e->d_name)),
+              (long long)mtime_of(p), out);
+    }
+    closedir(d);
+}
+
 static pid_t foreground(int64_t *since) {
     DIR *d = opendir(TASK_DIR);
     if (!d) return 0;
@@ -95,7 +134,7 @@ static pid_t foreground(int64_t *since) {
     struct dirent *e;
     while ((e = readdir(d))) {
         pid_t pid = (pid_t)atoi(e->d_name);
-        if (pid <= 0 || kill(pid, 0) != 0) continue;
+        if (pid <= 0 || !alive(pid)) continue;
         char p[300];
         snprintf(p, sizeof p, TASK_DIR "/%s", e->d_name);
         int64_t m = mtime_of(p);
@@ -266,7 +305,10 @@ static void daemon_loop(void) {
         }
         State st;
         current_state(&st);
-        if (!state_eq(&st, &cur.state)) logf_("now: %s \"%s\"", st.bundle_id, st.title);
+        if (!state_eq(&st, &cur.state)) {
+            logf_("now: %s \"%s\"", st.bundle_id, st.title);
+            log_task_files();
+        }
         if (!cur.state.bundle_id[0]) {
             cur.state = st;
             cur.start_at = wall;
