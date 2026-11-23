@@ -112,7 +112,8 @@ static void current_state(State *out) {
         return;
     }
     warned = 0;
-    snprintf(out->bundle_id, sizeof out->bundle_id, "%s", ti->appname && ti->appname[0] ? ti->appname : "unknown");
+    /* appname is the executable's path: /ebrmain/bin/eink-reader.app -> eink-reader */
+    app_from_path(out->bundle_id, sizeof out->bundle_id, ti->appname && ti->appname[0] ? ti->appname : "unknown");
     snprintf(out->app_name, sizeof out->app_name, "%s", out->bundle_id);
     for (int i = 0; ti->subtasks && i < ti->nsubtasks; i++) {
         subtaskinfo *st = &ti->subtasks[i];
