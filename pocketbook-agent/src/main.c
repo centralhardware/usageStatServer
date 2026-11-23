@@ -129,14 +129,21 @@ static int post(const char *body) {
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, discard);
-    /* The firmware's CA bundle may be old; the token still only goes to server_url. */
-    curl_easy_setopt(c, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
+    /* Use the system CA bundle only where it exists; otherwise keep libcurl's built-in path. */
+    if (access("/etc/ssl/certs/ca-certificates.crt", R_OK) == 0)
+        curl_easy_setopt(c, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
     CURLcode rc = curl_easy_perform(c);
     long status = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(h);
     curl_easy_cleanup(c);
-    if (rc != CURLE_OK) return 0; /* offline: try again later, quietly */
+    if (rc != CURLE_OK) {
+        /* Logged once per distinct error, so being offline for hours doesn't fill the log. */
+        static CURLcode last_rc = CURLE_OK;
+        if (rc != last_rc) logf_("POST %s: %s", url, curl_easy_strerror(rc));
+        last_rc = rc;
+        return 0;
+    }
     if (status / 100 != 2) logf_("POST %s: HTTP %ld", url, status);
     /* 422 = a block the server will never take; drop it rather than retry forever. */
     return status / 100 == 2 || status == 422;
@@ -206,6 +213,7 @@ static void daemon_loop(void) {
         }
         State st;
         current_state(&st);
+        if (!state_eq(&st, &cur.state)) logf_("now: %s \"%s\"", st.bundle_id, st.title);
         if (!cur.state.bundle_id[0]) {
             cur.state = st;
             cur.start_at = wall;
