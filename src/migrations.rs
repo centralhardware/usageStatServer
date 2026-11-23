@@ -19,6 +19,18 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (11, "reseed_title_rules", include_str!("../migrations/V11__reseed_title_rules.sql")),
     (12, "create_screen_time_table", include_str!("../migrations/V12__create_screen_time_table.sql")),
     (13, "create_events_table", include_str!("../migrations/V13__create_events_table.sql")),
+    (14, "create_view_web_visits", include_str!("../migrations/V14__create_view_web_visits.sql")),
+    (15, "create_view_safari_navigations", include_str!("../migrations/V15__create_view_safari_navigations.sql")),
+    (16, "create_view_notifications_biome", include_str!("../migrations/V16__create_view_notifications_biome.sql")),
+    (17, "create_view_notification_deliveries", include_str!("../migrations/V17__create_view_notification_deliveries.sql")),
+    (18, "create_view_app_intents", include_str!("../migrations/V18__create_view_app_intents.sql")),
+    (19, "create_view_bluetooth_events", include_str!("../migrations/V19__create_view_bluetooth_events.sql")),
+    (20, "create_view_menu_items", include_str!("../migrations/V20__create_view_menu_items.sql")),
+    (21, "create_view_documents_opened", include_str!("../migrations/V21__create_view_documents_opened.sql")),
+    (22, "create_view_screenshots", include_str!("../migrations/V22__create_view_screenshots.sql")),
+    (23, "create_view_web_apps_focus", include_str!("../migrations/V23__create_view_web_apps_focus.sql")),
+    (24, "create_view_media_usage_biome", include_str!("../migrations/V24__create_view_media_usage_biome.sql")),
+    (25, "create_view_screentime_app_usage", include_str!("../migrations/V25__create_view_screentime_app_usage.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]
