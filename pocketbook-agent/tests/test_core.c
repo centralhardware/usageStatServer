@@ -15,27 +15,22 @@ static void test_json_string(void) {
     CHECK(!strcmp(buf, "\"Война и мир\""));
 }
 
-static void test_cmdline(void) {
-    State s;
-    const char reader[] = "/ebrmain/bin/reader.app\0-x\0/mnt/ext1/Books/War and Peace.fb2\0";
-    CHECK(state_from_cmdline(&s, reader, sizeof reader - 1));
-    CHECK(!strcmp(s.kind, "app"));
-    CHECK(!strcmp(s.bundle_id, "reader"));
-    CHECK(!strcmp(s.title, "War and Peace"));
-
-    const char sd[] = "/ebrmain/bin/pdfviewer\0/mnt/ext2/a.b.pdf\0";
-    CHECK(state_from_cmdline(&s, sd, sizeof sd - 1));
-    CHECK(!strcmp(s.bundle_id, "pdfviewer"));
-    CHECK(!strcmp(s.title, "a.b"));
-
-    const char shell[] = "/ebrmain/bin/bookshelf.app\0";
-    CHECK(!state_from_cmdline(&s, shell, sizeof shell - 1));
-    const char app[] = "/ebrmain/bin/x\0/mnt/ext1/applications/usage-agent.app\0";
-    CHECK(!state_from_cmdline(&s, app, sizeof app - 1));
-    const char sys[] = "/ebrmain/bin/x\0/mnt/ext1/system/config/a.cfg\0";
-    CHECK(!state_from_cmdline(&s, sys, sizeof sys - 1));
-    const char dir[] = "/ebrmain/bin/x\0/mnt/ext1/Books\0";
-    CHECK(!state_from_cmdline(&s, dir, sizeof dir - 1));
+static void test_paths(void) {
+    char buf[256];
+    app_from_path(buf, sizeof buf, "/ebrmain/bin/eink-reader.app");
+    CHECK(!strcmp(buf, "eink-reader"));
+    app_from_path(buf, sizeof buf, "./pocketbook");
+    CHECK(!strcmp(buf, "pocketbook"));
+    title_from_path(buf, sizeof buf, "/mnt/ext1/Dropbox PocketBook/devid_mitchell-cloud_atlas-61f974f6337ce.fb2.zip");
+    CHECK(!strcmp(buf, "devid_mitchell-cloud_atlas-61f974f6337ce"));
+    title_from_path(buf, sizeof buf, "/mnt/ext1/Books/Harry-Potter-and-the-Prisoner-of-Azkaban_RuLit_Me_840767.epub");
+    CHECK(!strcmp(buf, "Harry-Potter-and-the-Prisoner-of-Azkaban_RuLit_Me_840767"));
+    title_from_path(buf, sizeof buf, "/mnt/ext1/Books/Dr. No.pdf");
+    CHECK(!strcmp(buf, "Dr. No"));
+    title_from_path(buf, sizeof buf, "/mnt/ext1/.hidden");
+    CHECK(!strcmp(buf, ".hidden"));
+    title_from_path(buf, sizeof buf, "");
+    CHECK(!strcmp(buf, ""));
 }
 
 static void test_block_json(void) {
@@ -57,7 +52,7 @@ static void test_suspend(void) {
 
 int main(void) {
     test_json_string();
-    test_cmdline();
+    test_paths();
     test_block_json();
     test_suspend();
     if (failures) return 1;

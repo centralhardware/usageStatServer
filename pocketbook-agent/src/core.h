@@ -37,13 +37,15 @@ int block_json(char *out, size_t cap, const Device *d, const Block *b);
 
 int state_eq(const State *a, const State *b);
 
-/* From a process's argv (NUL-separated cmdline, len bytes): when it opened a document on
- * the device storage, fills an app State (process name, title from the file name) and
- * returns 1; else 0. */
-int state_from_cmdline(State *out, const char *cmdline, size_t len);
-
 /* Wall-clock time beyond monotonic time between two ticks means the device was suspended
  * that long. Returns the suspended milliseconds when over threshold_ms, else 0. */
 int64_t suspended_ms(int64_t wall_delta_ms, int64_t mono_delta_ms, int64_t threshold_ms);
+
+/* "/ebrmain/bin/eink-reader.app" -> "eink-reader". */
+void app_from_path(char *out, size_t cap, const char *path);
+
+/* "/mnt/ext1/Books/Dune.fb2.zip" -> "Dune": the file name without its extensions
+ * (an archive's inner one too). */
+void title_from_path(char *out, size_t cap, const char *path);
 
 #endif

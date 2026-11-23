@@ -30,6 +30,10 @@
 #define SEND_EVERY_S 300
 #define SUSPEND_THRESHOLD_MS 15000
 #define MAX_BATCH 500
+#define TASK_DIR "/var/run/task"
+#define CURRENT_BOOK "/tmp/.current"
+/* How close the reader's coming to the front must be to the book's open. */
+#define BOOK_OPEN_WINDOW_S 15
 
 static char server_url[256];
 static char token[128];
@@ -76,83 +80,70 @@ static int load_config(void) {
     return server_url[0] != 0;
 }
 
-#ifndef NO_INKVIEW
-/* The foreground task from the firmware's task manager: its app name, and the book when the
- * active subtask has one (readers register it with SetSubtaskInfo). Returns 0 when the task
- * manager can't be asked. */
-static int task_state(State *out) {
-    int task = -1, subtask = -1;
-    GetActiveTask(&task, &subtask);
-    taskinfo *ti = task >= 0 ? GetTaskInfo(task) : NULL;
-    if (!ti) return 0;
-    memset(out, 0, sizeof *out);
-    strcpy(out->kind, KIND_APP);
-    snprintf(out->bundle_id, sizeof out->bundle_id, "%s", ti->appname ? ti->appname : "unknown");
-    snprintf(out->app_name, sizeof out->app_name, "%s", out->bundle_id);
-    for (int i = 0; ti->subtasks && i < ti->nsubtasks; i++) {
-        subtaskinfo *s = &ti->subtasks[i];
-        if (s->id != subtask) continue;
-        if (s->book && s->book[0]) {
-            /* name is the title the reader shows; fall back to the file name. */
-            if (s->name && s->name[0]) snprintf(out->title, sizeof out->title, "%s", s->name);
-            else {
-                const char *b = strrchr(s->book, '/');
-                snprintf(out->title, sizeof out->title, "%s", b ? b + 1 : s->book);
-            }
-        }
-        break;
-    }
-    return 1;
+static int64_t mtime_of(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (int64_t)st.st_mtime : -1;
 }
 
-/* Once at startup: every task the firmware knows, to see what the readers register. */
-static void log_tasks(void) {
-    int list[64];
-    int n = GetTaskList(list, 64);
-    int at = -1, as = -1;
-    GetActiveTask(&at, &as);
-    logf_("tasks: %d, active %d/%d", n, at, as);
-    for (int i = 0; i < n && i < 64; i++) {
-        taskinfo *ti = GetTaskInfo(list[i]);
-        if (!ti) { logf_("  task %d: no info", list[i]); continue; }
-        logf_("  task %d app=%s pid=%d", list[i], ti->appname ? ti->appname : "-", (int)ti->mainpid);
-        for (int j = 0; ti->subtasks && j < ti->nsubtasks; j++)
-            logf_("    sub %d name=%s book=%s", ti->subtasks[j].id,
-                  ti->subtasks[j].name ? ti->subtasks[j].name : "-",
-                  ti->subtasks[j].book ? ti->subtasks[j].book : "-");
-    }
-}
-#endif
-
-/* The foreground app and its book; without the task manager, a book open in any process,
- * else the library (home screen, settings…). */
-static void current_state(State *out) {
-#ifndef NO_INKVIEW
-    static int warned;
-    if (task_state(out)) return;
-    if (!warned++) logf_("task manager unavailable, falling back to /proc");
-#endif
-    DIR *proc = opendir("/proc");
+/* The foreground task: the firmware's task manager touches /var/run/task/<pid> when a task
+ * comes to the front, so the newest entry of a live process is the one on screen. */
+static pid_t foreground(int64_t *since) {
+    DIR *d = opendir(TASK_DIR);
+    if (!d) return 0;
+    pid_t best = 0;
+    int64_t best_m = -1;
     struct dirent *e;
-    while (proc && (e = readdir(proc))) {
-        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
-        char path[64], buf[2048];
-        snprintf(path, sizeof path, "/proc/%s/cmdline", e->d_name);
-        int fd = open(path, O_RDONLY);
-        if (fd < 0) continue;
-        ssize_t n = read(fd, buf, sizeof buf - 1);
-        close(fd);
-        if (n > 0 && buf[n - 1] != 0) buf[n++] = 0;
-        if (n > 0 && state_from_cmdline(out, buf, (size_t)n)) {
-            closedir(proc);
-            return;
-        }
+    while ((e = readdir(d))) {
+        pid_t pid = (pid_t)atoi(e->d_name);
+        if (pid <= 0 || kill(pid, 0) != 0) continue;
+        char p[300];
+        snprintf(p, sizeof p, TASK_DIR "/%s", e->d_name);
+        int64_t m = mtime_of(p);
+        if (m > best_m) { best_m = m; best = pid; }
     }
-    if (proc) closedir(proc);
+    closedir(d);
+    *since = best_m;
+    return best;
+}
+
+/* The foreground app, with the open book when that app is the one that opened it: the
+ * firmware writes the book's path to /tmp/.current on open, so the task that came to the
+ * front at that moment is the reader. */
+static void current_state(State *out) {
+    static int64_t seen_current = -1;
+    static pid_t reader = 0;
     memset(out, 0, sizeof *out);
     strcpy(out->kind, KIND_APP);
-    strcpy(out->bundle_id, "library");
-    strcpy(out->app_name, "Library");
+
+    int64_t since = -1;
+    pid_t fg = foreground(&since);
+    char cmd[512] = "";
+    if (fg) {
+        char p[64];
+        snprintf(p, sizeof p, "/proc/%d/cmdline", (int)fg);
+        int fd = open(p, O_RDONLY);
+        if (fd >= 0) { ssize_t n = read(fd, cmd, sizeof cmd - 1); cmd[n > 0 ? n : 0] = 0; close(fd); }
+    }
+    if (!cmd[0]) {
+        strcpy(out->bundle_id, "unknown");
+        strcpy(out->app_name, "unknown");
+        return;
+    }
+    app_from_path(out->bundle_id, sizeof out->bundle_id, cmd);
+    snprintf(out->app_name, sizeof out->app_name, "%s", out->bundle_id);
+
+    int64_t cur_m = mtime_of(CURRENT_BOOK);
+    if (cur_m != seen_current) {
+        seen_current = cur_m;
+        reader = (cur_m >= 0 && since >= 0 && llabs(since - cur_m) <= BOOK_OPEN_WINDOW_S) ? fg : 0;
+    }
+    if (reader && fg == reader) {
+        char path[512] = "";
+        FILE *f = fopen(CURRENT_BOOK, "r");
+        if (f) { if (!fgets(path, sizeof path, f)) path[0] = 0; fclose(f); }
+        path[strcspn(path, "\r\n")] = 0;
+        title_from_path(out->title, sizeof out->title, path);
+    }
 }
 
 static void spool(const Block *b) {
@@ -204,11 +195,11 @@ static int post(const char *body) {
 }
 
 /* Sends up to MAX_BATCH spooled blocks plus the open one; keeps the rest. */
-static void flush(const Block *open_block) {
+static int flush(const Block *open_block) {
     FILE *f = fopen(SPOOL_PATH, "r");
     size_t cap = 4096, len = 0;
     char *body = malloc(cap);
-    if (!body) { if (f) fclose(f); return; }
+    if (!body) { if (f) fclose(f); return 0; }
     len += (size_t)sprintf(body, "{\"blocks\":[");
     int count = 0;
     char line[1600];
@@ -230,7 +221,13 @@ static void flush(const Block *open_block) {
         if (l) { if (count) body[len++] = ','; memcpy(body + len, open_json, l); len += l; count++; }
     }
     memcpy(body + len, "]}", 3);
-    if (count && post(body) && f) {
+    int ok = !count || post(body);
+    if (count && ok) {
+        static int first = 1;
+        if (first) logf_("sent %d blocks", count);
+        first = 0;
+    }
+    if (count && ok && f) {
         /* Drop what was sent: copy the unsent tail over the file. */
         FILE *tmp = fopen(SPOOL_PATH ".tmp", "w");
         if (tmp) {
@@ -244,76 +241,17 @@ static void flush(const Block *open_block) {
     }
     if (f) fclose(f);
     free(body);
-}
-
-static void log_file(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) { logf_("  %s: missing", path); return; }
-    char buf[512] = "";
-    FILE *f = fopen(path, "r");
-    if (f && S_ISREG(st.st_mode)) {
-        size_t n = fread(buf, 1, sizeof buf - 1, f);
-        buf[n] = 0;
-        for (size_t i = 0; i < n; i++) if (buf[i] == '\n' || buf[i] == 0) buf[i] = '|';
-    }
-    if (f) fclose(f);
-    logf_("  %s: mtime %ld size %ld: %s", path, (long)st.st_mtime, (long)st.st_size, buf);
-}
-
-static void log_dir(const char *path) {
-    DIR *d = opendir(path);
-    if (!d) { logf_("  %s/: missing", path); return; }
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
-        char p[512];
-        snprintf(p, sizeof p, "%s/%s", path, e->d_name);
-        log_file(p);
-    }
-    closedir(d);
-}
-
-/* Diagnostic dump (temporary): where the firmware might say which book is open. */
-static void log_diagnostics(void) {
-    logf_("diag: files");
-    log_file("/tmp/.current");
-    log_file("/tmp/history.txt");
-    log_dir("/var/run/task");
-    log_dir("/mnt/ext1/system/state");
-    log_dir("/mnt/ext1/system/explorer-3");
-    logf_("diag: processes");
-    DIR *proc = opendir("/proc");
-    struct dirent *e;
-    while (proc && (e = readdir(proc))) {
-        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
-        char path[64], buf[600];
-        snprintf(path, sizeof path, "/proc/%s/cmdline", e->d_name);
-        int fd = open(path, O_RDONLY);
-        if (fd < 0) continue;
-        ssize_t n = read(fd, buf, sizeof buf - 1);
-        close(fd);
-        if (n <= 0) continue; /* kernel thread */
-        for (ssize_t i = 0; i < n; i++) if (!buf[i]) buf[i] = ' ';
-        buf[n] = 0;
-        logf_("  %s: %s", e->d_name, buf);
-    }
-    if (proc) closedir(proc);
+    return ok;
 }
 
 static void daemon_loop(void) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     logf_("started as %s, sending to %s", device.device_id, server_url);
-#ifndef NO_INKVIEW
-    log_tasks();
-#endif
     Block cur = {0};
     int64_t last_wall = now_ms(CLOCK_REALTIME), last_mono = now_ms(CLOCK_MONOTONIC);
     int64_t last_send = 0;
-    int tick = 0;
+    int failures = 0;
     for (;;) {
-        /* 1 and 3 minutes after start: open a book in between to see what changes. */
-        if (tick == 2 || tick == 6) log_diagnostics();
-        tick++;
         int64_t wall = now_ms(CLOCK_REALTIME), mono = now_ms(CLOCK_MONOTONIC);
         int64_t slept = suspended_ms(wall - last_wall, mono - last_mono, SUSPEND_THRESHOLD_MS);
         int woke = 0;
@@ -339,8 +277,13 @@ static void daemon_loop(void) {
             cur.start_at = wall;
         }
         cur.stop_at = wall;
-        if (woke || mono - last_send >= SEND_EVERY_S * 1000) {
-            flush(&cur);
+        /* Every 5 minutes, at start and on waking; after a failure (Wi-Fi takes a while to
+         * come back after sleep) again on each tick for the next 5 minutes. */
+        if (woke) failures = 0;
+        if (woke || !last_send || mono - last_send >= SEND_EVERY_S * 1000 ||
+            (failures && failures < SEND_EVERY_S / TICK_S)) {
+            if (flush(&cur)) failures = 0;
+            else failures++;
             last_send = mono;
         }
         last_wall = wall;

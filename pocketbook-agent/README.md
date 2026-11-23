@@ -5,15 +5,24 @@ macOS agent, through `POST /api/usage`:
 
 | kind | bundle_id / app_name | title |
 |---|---|---|
-| `app` | the foreground app (task manager appname) | the open book's title, empty outside a book |
-| `app` | `library` / `Library` (only when the task manager is unavailable and no document is open) | empty |
+| `app` | the foreground app (e.g. `eink-reader`, `bookshelf`, `explorer`) | the open book's file name without extensions, only while its reader is in front |
 | `away` | `sleep` (device suspended) | empty |
 
 It is a C program: tapping **usage-agent** in Applications starts a background daemon (once per
-boot), tapping it again shows its status. Every 30 s the daemon scans `/proc` for a process that
-opened a document under `/mnt/ext1` or `/mnt/ext2`; a jump of wall-clock time past monotonic time
-means the device slept. Closed blocks are spooled to a file and sent every 5 minutes (and on
-waking) whenever Wi-Fi happens to be up; the agent never turns Wi-Fi on itself.
+boot), tapping it again shows its status. Every 30 s the daemon looks at:
+
+- `/var/run/task/<pid>`: the firmware's task manager touches a task's file when it comes to the
+  front, so the newest one of a live process is the app on screen (its name from `/proc`);
+- `/tmp/.current`: the path of the book last opened, written on open. The task that came to the
+  front within 15 s of that write is the reader; while it stays in front, that book is open;
+- a jump of wall-clock time past monotonic time: the device slept.
+
+(The InkView task API — `GetActiveTask`/`GetTaskInfo` — returns nothing outside an InkView app,
+and readers don't take the book on their command line, hence these files.)
+
+Closed blocks are spooled to a file and sent at start, every 5 minutes and on waking, retrying
+every 30 s for 5 minutes after a failure (Wi-Fi takes a while to come back after sleep). The
+agent never turns Wi-Fi on itself.
 
 ## Install
 

@@ -52,42 +52,33 @@ static void copy(char *dst, size_t cap, const char *src, size_t len) {
     dst[len] = 0;
 }
 
-static int on_storage(const char *path) {
-    return !strncmp(path, "/mnt/ext1/", 10) || !strncmp(path, "/mnt/ext2/", 10);
-}
-
-int state_from_cmdline(State *out, const char *cmdline, size_t len) {
-    if (len == 0) return 0;
-    const char *argv0 = cmdline;
-    const char *end = cmdline + len;
-    /* The document is the last argument on device storage that has an extension and isn't
-     * an application or a directory of the system area. */
-    const char *doc = NULL;
-    for (const char *a = argv0 + strlen(argv0) + 1; a < end; a += strlen(a) + 1) {
-        const char *slash = strrchr(a, '/');
-        const char *dot = slash ? strrchr(slash, '.') : NULL;
-        if (on_storage(a) && dot && dot[1] && strcmp(dot, ".app") &&
-            strncmp(a, "/mnt/ext1/system/", 17))
-            doc = a;
-    }
-    if (!doc) return 0;
-
-    memset(out, 0, sizeof *out);
-    strcpy(out->kind, KIND_APP);
-    const char *base = strrchr(argv0, '/');
-    base = base ? base + 1 : argv0;
-    size_t blen = strlen(base);
-    if (blen > 4 && !strcmp(base + blen - 4, ".app")) blen -= 4;
-    copy(out->bundle_id, sizeof out->bundle_id, base, blen);
-    copy(out->app_name, sizeof out->app_name, base, blen);
-
-    const char *file = strrchr(doc, '/') + 1;
-    const char *dot = strrchr(file, '.');
-    copy(out->title, sizeof out->title, file, (size_t)(dot - file));
-    return 1;
-}
-
 int64_t suspended_ms(int64_t wall_delta_ms, int64_t mono_delta_ms, int64_t threshold_ms) {
     int64_t gap = wall_delta_ms - mono_delta_ms;
     return gap > threshold_ms ? gap : 0;
+}
+
+void app_from_path(char *out, size_t cap, const char *path) {
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    size_t len = strlen(base);
+    if (len > 4 && !strcmp(base + len - 4, ".app")) len -= 4;
+    copy(out, cap, base, len);
+}
+
+void title_from_path(char *out, size_t cap, const char *path) {
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    size_t len = strlen(base);
+    /* Drop up to two extensions (Dune.fb2.zip), but never the whole name. */
+    for (int i = 0; i < 2; i++) {
+        const char *dot = NULL;
+        for (const char *p = base; p < base + len; p++) if (*p == '.') dot = p;
+        if (!dot || dot == base || base + len - dot > 6 || base + len - dot < 2) break;
+        int alnum = 1;
+        for (const char *p = dot + 1; p < base + len; p++)
+            if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9'))) alnum = 0;
+        if (!alnum) break;
+        len = (size_t)(dot - base);
+    }
+    copy(out, cap, base, len);
 }
