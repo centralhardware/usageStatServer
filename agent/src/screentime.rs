@@ -214,7 +214,10 @@ pub fn import(device_id: &str, state_path: &Path) -> Vec<usage_model::ScreenTime
             }
             cursors.insert("knowledge:web".into(), max);
         }
-        Err(e) => log::warn!("knowledgeC web usage: {e} (Full Disk Access?)"),
+        Err(e) => {
+            log::warn!("knowledgeC web usage: {e} (Full Disk Access?)");
+            eprintln!("knowledgeC web usage: {e}");
+        }
     }
 
     if let Some(dir) = state_path.parent() {
@@ -229,7 +232,7 @@ fn web_usage(since_ms: i64) -> Result<Vec<(String, String, i64, i64)>, rusqlite:
     let path = home().join("Library/Application Support/Knowledge/knowledgeC.db");
     let db = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut q = db.prepare(
-        "SELECT o.ZVALUESTRING, IFNULL(m.ZDKDIGITALHEALTHMETADATAKEY__WEBDOMAIN, ''), o.ZSTARTDATE, o.ZENDDATE \
+        "SELECT o.ZVALUESTRING, IFNULL(m.Z_DKDIGITALHEALTHMETADATAKEY__WEBDOMAIN, ''), o.ZSTARTDATE, o.ZENDDATE \
          FROM ZOBJECT o LEFT JOIN ZSTRUCTUREDMETADATA m ON o.ZSTRUCTUREDMETADATA = m.Z_PK \
          WHERE o.ZSTREAMNAME = '/app/webUsage' AND o.ZENDDATE > ?1 AND o.ZENDDATE > o.ZSTARTDATE ORDER BY o.ZENDDATE",
     )?;
