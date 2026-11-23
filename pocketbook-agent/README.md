@@ -17,8 +17,8 @@ waking) whenever Wi-Fi happens to be up; the agent never turns Wi-Fi on itself.
 
 ## Install
 
-1. Download `usage-agent.app` from the workflow artifact and copy it to `applications/` on the
-   device over USB.
+1. Download `usage-agent.zip` from the latest `pocketbook-agent-v*` release, unzip it and copy
+   `usage-agent.app` to `applications/` on the device over USB.
 2. Create `system/usage-agent/config`:
    ```
    server_url=https://usage.centralhardware.me

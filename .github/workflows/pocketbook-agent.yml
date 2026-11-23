@@ -38,4 +38,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/pocketbook-agent-v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" pocketbook-agent/usage-agent.app --title "PocketBook usage-agent ${GITHUB_REF_NAME#pocketbook-agent-v}" --generate-notes
+        # GitHub rejects .app as a release asset name, so the binary ships zipped.
+        run: |
+          (cd pocketbook-agent && zip usage-agent.zip usage-agent.app)
+          gh release create "$GITHUB_REF_NAME" pocketbook-agent/usage-agent.zip --title "PocketBook usage-agent ${GITHUB_REF_NAME#pocketbook-agent-v}" --generate-notes
