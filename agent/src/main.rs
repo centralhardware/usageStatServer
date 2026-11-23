@@ -18,6 +18,8 @@
 
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(target_os = "macos")]
+mod screentime;
 
 use std::process::ExitCode;
 
@@ -46,6 +48,10 @@ fn main() -> ExitCode {
         locked: mac::screen_locked(),
     };
 
+    if std::env::args().any(|a| a == "--dump-screen-time") {
+        screentime::dump();
+        return ExitCode::SUCCESS;
+    }
     if std::env::args().any(|a| a == "--dump-now-playing") {
         match mac::now_playing() {
             Some(n) => println!("bundle={} playing={:?} title={:?} artist={:?}", n.bundle, n.playing, n.title, n.artist),
