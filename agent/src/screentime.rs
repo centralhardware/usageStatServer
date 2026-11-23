@@ -430,7 +430,7 @@ pub fn import_biome_events(device_id: &str, state_path: &Path) -> Vec<usage_mode
                     }
                     let Some(mut fields) = usage_agent::biome::decode(payload) else { continue };
                     fields.truncate(64);
-                    let bundle_id = fields.iter().map(|(_, v)| v).find(|v| looks_like_bundle(v) && v.len() <= 256).cloned().unwrap_or_default();
+                    let bundle_id = pick_bundle(&fields);
                     evs.push(usage_model::EventBlock {
                         device_id: device_id.into(), source_device: dev.clone(), stream: format!("biome:{stream}"),
                         bundle_id, value: String::new(), fields, start_at: at, stop_at: at,
@@ -465,5 +465,31 @@ pub fn dump_biome_decoded(stream: &str, device: Option<&str>) {
     println!("{}: {} records", dir.display(), recs.len());
     for (at, d) in recs.iter().rev().take(8) {
         println!("{} {:?}", fmt_ts(*at as f64 / 1000.0), d);
+    }
+}
+
+/// The record's app: a bundle-looking value that is not a website (a URL's host in the same record).
+fn pick_bundle(fields: &[(String, String)]) -> String {
+    let hosts: Vec<&str> = fields
+        .iter()
+        .filter_map(|(_, v)| v.strip_prefix("https://").or_else(|| v.strip_prefix("http://")))
+        .map(|rest| rest.split(['/', '?', '#', ':']).next().unwrap_or(""))
+        .collect();
+    fields
+        .iter()
+        .map(|(_, v)| v)
+        .find(|v| looks_like_bundle(v) && v.len() <= 256 && !v.starts_with("www.") && !hosts.iter().any(|h| *h == v.as_str() || h.ends_with(&format!(".{v}"))))
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundle_is_not_the_website() {
+        let f = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        let rec = f(&[("4", "https://www.youtube.com/shorts/x"), ("5", "youtube.com"), ("6", "com.apple.Safari")]);
+        assert_eq!(super::pick_bundle(&rec), "com.apple.Safari");
+        assert_eq!(super::pick_bundle(&f(&[("5", "www.example.org"), ("6", "app.swiftgram.ios")])), "app.swiftgram.ios");
     }
 }
