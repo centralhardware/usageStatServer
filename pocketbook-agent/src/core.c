@@ -34,10 +34,13 @@ int block_json(char *out, size_t cap, const Device *d, const Block *b) {
         json_string(app, sizeof app, b->state.app_name) < 0 ||
         json_string(title, sizeof title, b->state.title) < 0)
         return -1;
+    char fields[64] = "";
+    if (b->page_turns > 0)
+        snprintf(fields, sizeof fields, ",\"fields\":[[\"agent.page_turns\",\"%d\"]]", b->page_turns);
     int n = snprintf(out, cap,
                      "{\"device_id\":%s,\"device_name\":%s,\"kind\":%s,\"bundle_id\":%s,"
-                     "\"app_name\":%s,\"title\":%s,\"start_at\":%" PRId64 ",\"stop_at\":%" PRId64 "}",
-                     id, name, kind, bundle, app, title, b->start_at, b->stop_at);
+                     "\"app_name\":%s,\"title\":%s%s,\"start_at\":%" PRId64 ",\"stop_at\":%" PRId64 "}",
+                     id, name, kind, bundle, app, title, fields, b->start_at, b->stop_at);
     return (n < 0 || (size_t)n >= cap) ? -1 : n;
 }
 

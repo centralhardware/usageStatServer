@@ -8,16 +8,22 @@ macOS agent, through `POST /api/usage`:
 | `app` | the foreground app (e.g. `eink-reader`, `bookshelf`, `explorer`) | the open book's file name without extensions, only while its reader is in front |
 | `away` | `sleep` (device suspended) | empty |
 
+App blocks carry the presses made during them as `fields['agent.page_turns']` (the server keeps
+`agent.*` fields through title parsing).
+
 It is a C program that stays resident as a background InkView task: tapping **usage-agent** in
 Applications starts it (once per boot) and shows its status; tapping again shows the status and
-sends it back to the background. Every 30 s it asks:
+sends it back to the background. It listens on `/dev/input` (every tap and page-button press,
+system-wide: apps run as root, while InkView events reach only the app in front) and at each
+press, or every 30 s without one, asks:
 
 - the firmware task manager (`GetActiveTask`/`GetTaskInfo`) which app is in front. It answers only
   a registered InkView task, which is why the agent isn't a forked daemon; readers don't take the
   book on their command line and `/var/run/task/<pid>` mtimes don't follow switching either;
 - the book: the one the active subtask registered, else `/tmp/.current` (written by the firmware
   on open) while the app that was in front when it changed stays in front;
-- a jump of wall-clock time past monotonic time: the device slept. The firmware suspends a few
+- a jump of wall-clock time past monotonic time: the device slept; a block cut by a long sleep
+  ends at the last press before it. The firmware suspends a few
   seconds after every page turn, so with a book open a sleep up to `reading_gap_s` (default 600)
   counts as reading and the block goes on; longer ones become `away`/`sleep`.
 

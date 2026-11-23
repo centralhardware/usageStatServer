@@ -21,6 +21,7 @@ typedef struct {
     State state;
     int64_t start_at;    /* unix ms */
     int64_t stop_at;
+    int page_turns;      /* taps and button presses while it lasted; sent as agent.page_turns */
 } Block;
 
 typedef struct {

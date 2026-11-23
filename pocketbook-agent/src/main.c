@@ -16,6 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <poll.h>
+#include <linux/input.h>
 
 #ifndef NO_INKVIEW
 #include <inkview.h>
@@ -238,26 +240,66 @@ static int flush(const Block *open_block) {
     return ok;
 }
 
+/* Every input device (touch screen, page buttons): apps run as root, so the agent sees each
+ * tap system-wide, though InkView sends events only to the app in front. */
+#define MAX_INPUTS 8
+static struct pollfd inputs[MAX_INPUTS];
+static int n_inputs;
+
+static void open_inputs(void) {
+    DIR *d = opendir("/dev/input");
+    struct dirent *e;
+    while (d && (e = readdir(d)) && n_inputs < MAX_INPUTS) {
+        if (strncmp(e->d_name, "event", 5)) continue;
+        char p[300];
+        snprintf(p, sizeof p, "/dev/input/%s", e->d_name);
+        int fd = open(p, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        inputs[n_inputs].fd = fd;
+        inputs[n_inputs].events = POLLIN;
+        n_inputs++;
+    }
+    if (d) closedir(d);
+    logf_("listening on %d input devices", n_inputs);
+}
+
+/* Waits up to timeout_ms for input; returns the presses (touch-downs and button presses). */
+static int wait_presses(int timeout_ms) {
+    if (!n_inputs) { usleep((useconds_t)timeout_ms * 1000); return 0; }
+    if (poll(inputs, (nfds_t)n_inputs, timeout_ms) <= 0) return 0;
+    int presses = 0;
+    for (int i = 0; i < n_inputs; i++) {
+        if (!(inputs[i].revents & POLLIN)) continue;
+        struct input_event ev[32];
+        ssize_t n;
+        while ((n = read(inputs[i].fd, ev, sizeof ev)) > 0)
+            for (size_t j = 0; j < (size_t)n / sizeof ev[0]; j++)
+                if (ev[j].type == EV_KEY && ev[j].value == 1) presses++;
+    }
+    return presses;
+}
+
 static void daemon_loop(void) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     logf_("started as %s, sending to %s", device.device_id, server_url);
+    open_inputs();
     Block cur = {0};
     int64_t last_wall = now_ms(CLOCK_REALTIME), last_mono = now_ms(CLOCK_MONOTONIC);
-    int64_t last_send = 0;
-    int failures = 0;
+    int64_t last_send = 0, last_press = 0;
+    int failures = 0, presses = 0;
     for (;;) {
         int64_t wall = now_ms(CLOCK_REALTIME), mono = now_ms(CLOCK_MONOTONIC);
         int64_t slept = suspended_ms(wall - last_wall, mono - last_mono, SUSPEND_THRESHOLD_MS);
-        int woke = 0;
-        if (slept) woke = 1;
+        int woke = slept != 0;
         /* The firmware suspends the device a few seconds after each page turn, so while a
-         * book is open a short sleep is reading, not time away: the block goes on. */
+         * book is open a sleep shorter than reading_gap_s is reading: the block goes on. */
         if (slept && cur.state.title[0] && slept <= reading_gap_s * 1000) slept = 0;
         if (slept && cur.state.bundle_id[0]) {
-            /* The open block ended when the device went to sleep, roughly at the last tick. */
-            cur.stop_at = last_wall;
+            /* The block ended at the last tap before the sleep (or the last look, without one). */
+            int64_t end = last_press > cur.start_at ? last_press : last_wall;
+            cur.stop_at = end;
             spool(&cur);
-            Block s = {{KIND_AWAY, AWAY_SLEEP, AWAY_SLEEP, ""}, last_wall, wall - (mono - last_mono)};
+            Block s = {{KIND_AWAY, AWAY_SLEEP, AWAY_SLEEP, ""}, end, wall - (mono - last_mono), 0};
             spool(&s);
             memset(&cur, 0, sizeof cur);
         }
@@ -270,22 +312,31 @@ static void daemon_loop(void) {
         } else if (!state_eq(&st, &cur.state)) {
             cur.stop_at = wall;
             spool(&cur);
+            memset(&cur, 0, sizeof cur);
             cur.state = st;
             cur.start_at = wall;
         }
+        cur.page_turns += presses;
         cur.stop_at = wall;
         /* Every 5 minutes, at start and on waking; after a failure (Wi-Fi takes a while to
-         * come back after sleep) again on each tick for the next 5 minutes. */
+         * come back after sleep) again every 30 s for the next 5 minutes. */
         if (woke) failures = 0;
         if (woke || !last_send || mono - last_send >= SEND_EVERY_S * 1000 ||
-            (failures && failures < SEND_EVERY_S / TICK_S)) {
+            (failures && failures < SEND_EVERY_S / TICK_S && mono - last_send >= TICK_S * 1000)) {
             if (flush(&cur)) failures = 0;
             else failures++;
             last_send = mono;
         }
         last_wall = wall;
         last_mono = mono;
-        sleep(TICK_S);
+        /* Next look: at the next tap (the app or book may have changed) or after TICK_S. */
+        presses = 0;
+        while (!presses) {
+            int64_t left = TICK_S * 1000 - (now_ms(CLOCK_MONOTONIC) - mono);
+            if (left <= 0) break;
+            presses = wait_presses((int)left);
+        }
+        if (presses) last_press = now_ms(CLOCK_REALTIME);
     }
 }
 

@@ -55,7 +55,8 @@ impl UsageRepository {
         let rules = self.rules.read().unwrap();
         for b in blocks.iter_mut().filter(|b| !b.title.is_empty()) {
             let p = titles::parse(&rules, &b.bundle_id, &b.title);
-            (b.subject, b.context, b.fields) = (p.subject, p.context, p.fields);
+            b.fields = titles::merge_fields(p.fields, &b.fields);
+            (b.subject, b.context) = (p.subject, p.context);
         }
     }
 

@@ -93,8 +93,26 @@ pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> Parsed {
     Parsed { subject, context, fields: Vec::new() }
 }
 
+/// Fields an agent measured itself (keys starting with `agent.`, e.g. the PocketBook's
+/// `agent.page_turns`) survive parsing and re-parsing; all others come from the title rules.
+pub fn merge_fields(parsed: Vec<(String, String)>, sent: &[(String, String)]) -> Vec<(String, String)> {
+    let mut fields = parsed;
+    fields.extend(sent.iter().filter(|(k, _)| k.starts_with("agent.")).cloned());
+    fields
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_fields_survive_parsing() {
+        let sent = vec![("agent.page_turns".to_owned(), "12".to_owned()), ("host".to_owned(), "stale".to_owned())];
+        let parsed = vec![("host".to_owned(), "10.168.0.77".to_owned())];
+        assert_eq!(
+            super::merge_fields(parsed, &sent),
+            vec![("host".to_owned(), "10.168.0.77".to_owned()), ("agent.page_turns".to_owned(), "12".to_owned())]
+        );
+    }
+
     use super::*;
 
     /// The rules V11 inserts, read from the migration itself: ('bundle', 'pattern') tuples with

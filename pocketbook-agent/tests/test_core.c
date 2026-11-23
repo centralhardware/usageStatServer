@@ -35,13 +35,16 @@ static void test_paths(void) {
 
 static void test_block_json(void) {
     Device d = {"pocketbook-619", "PocketBook"};
-    Block b = {{"app", "reader", "reader", "Dune"}, 1000, 2000};
+    Block b = {{"app", "reader", "reader", "Dune"}, 1000, 2000, 0};
     char buf[512];
     CHECK(block_json(buf, sizeof buf, &d, &b) > 0);
     CHECK(!strcmp(buf, "{\"device_id\":\"pocketbook-619\",\"device_name\":\"PocketBook\",\"kind\":\"app\","
                        "\"bundle_id\":\"reader\",\"app_name\":\"reader\",\"title\":\"Dune\","
                        "\"start_at\":1000,\"stop_at\":2000}"));
     CHECK(block_json(buf, 10, &d, &b) == -1);
+    b.page_turns = 12;
+    CHECK(block_json(buf, sizeof buf, &d, &b) > 0);
+    CHECK(strstr(buf, ",\"title\":\"Dune\",\"fields\":[[\"agent.page_turns\",\"12\"]],\"start_at\":1000") != NULL);
 }
 
 static void test_suspend(void) {
