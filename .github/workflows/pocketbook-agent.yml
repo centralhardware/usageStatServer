@@ -19,7 +19,11 @@ jobs:
         run: git clone --depth 1 --branch 6.5 https://github.com/pocketbook/SDK_6.3.0.git "$RUNNER_TEMP/sdk"
       - name: Cross-compile
         working-directory: pocketbook-agent
+        # The SDK's gcc 6.3 links libmpfr.so.4; Ubuntu ships the ABI-compatible .so.6.
         run: |
+          mkdir -p "$RUNNER_TEMP/compat"
+          ln -sf "$(ls /usr/lib/x86_64-linux-gnu/libmpfr.so.6* | head -1)" "$RUNNER_TEMP/compat/libmpfr.so.4"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/compat"
           make SDK="$RUNNER_TEMP/sdk/SDK-B288"
           file usage-agent.app
       - uses: actions/upload-artifact@v7
