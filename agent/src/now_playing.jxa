@@ -1,0 +1,18 @@
+// Title, artist and owner of macOS Now Playing, as JSON; all empty when nothing is registered.
+// osascript may read MRNowPlayingRequest where other processes can't since macOS 15.4.
+function run() {
+  $.NSBundle.bundleWithPath("/System/Library/PrivateFrameworks/MediaRemote.framework/").load;
+  const request = $.NSClassFromString("MRNowPlayingRequest");
+  // With no player, a step of the path is nil and its properties are undefined.
+  const get = (o, ...keys) => keys.reduce((v, k) => (v == null ? undefined : v[k]), o);
+  const text = (v) => (typeof v === "string" ? v : "");
+  const client = get(request, "localNowPlayingPlayerPath", "client");
+  const info = get(request, "localNowPlayingItem", "nowPlayingInfo", "js") || {};
+  const field = (k) => text(get(info, "kMRMediaRemoteNowPlayingInfo" + k, "js"));
+  return JSON.stringify({
+    bundle: text(get(client, "parentApplicationBundleIdentifier", "js")) || text(get(client, "bundleIdentifier", "js")),
+    title: field("Title"),
+    artist: field("Artist"),
+    playing: !!get(request, "localIsPlaying"),
+  });
+}

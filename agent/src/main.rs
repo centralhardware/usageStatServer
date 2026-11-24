@@ -11,7 +11,7 @@
 //! ~/Library/Preferences/me.centralhardware.usage-agent.plist (the installer asks for it),
 //! plus an optional `AuthToken` ($USAGE_AGENT_TOKEN) sent as a bearer token.
 //! Preferences are re-read every flush, so changes need no restart.
-//! Every 10 s it also checks what plays video (the app holding a display-sleep power
+//! Every second it also checks what plays video (the app holding a display-sleep power
 //! assertion) and, for a browser, the front tab's domain via AppleScript (macOS asks once per
 //! browser for Automation); those go to `mac_media`.
 //! `--dry-run` prints one observation and exits.
@@ -38,8 +38,6 @@ fn main() -> ExitCode {
     const ENDPOINT: &str = "/api/usage";
     const TICK: Duration = Duration::from_secs(1);
     const FLUSH_EVERY: Duration = Duration::from_secs(60);
-    /// Media is sampled less often: finding the tab's domain runs osascript.
-    const MEDIA_EVERY: Duration = Duration::from_secs(10);
     /// Screen Time stores (synced devices, web usage) are re-read this often.
     const SCREEN_TIME_EVERY: Duration = Duration::from_secs(15 * 60);
 
@@ -109,7 +107,6 @@ fn main() -> ExitCode {
 
     let mut tracker = Tracker::new(mac::device_id(), mac::device_name(), mac::user_name());
     let mut media = MediaTracker::new(mac::device_id(), mac::device_name(), mac::user_name());
-    let mut last_media = Instant::now() - MEDIA_EVERY;
     let mut last_flush = Instant::now();
     // First import a minute after start, so a restart doesn't delay the live tracking.
     let mut last_screen_time = Instant::now() - SCREEN_TIME_EVERY + Duration::from_secs(60);
@@ -122,12 +119,9 @@ fn main() -> ExitCode {
         for b in tracker.tick(&o) {
             queue.push(&Item::Usage(b));
         }
-        if last_media.elapsed() >= MEDIA_EVERY {
-            last_media = Instant::now();
-            let playing = if o.locked || o.switched_out { None } else { mac::playing() };
-            for m in media.tick(o.now_ms, playing.as_ref(), SLEEP_GAP_MS + MEDIA_EVERY.as_millis() as i64) {
-                queue.push(&Item::Media(m));
-            }
+        let playing = if o.locked || o.switched_out { None } else { mac::playing() };
+        for m in media.tick(o.now_ms, playing.as_ref(), SLEEP_GAP_MS) {
+            queue.push(&Item::Media(m));
         }
         if last_screen_time.elapsed() >= SCREEN_TIME_EVERY {
             last_screen_time = Instant::now();

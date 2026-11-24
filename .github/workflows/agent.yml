@@ -34,7 +34,11 @@ jobs:
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
       - name: Smoke test
         working-directory: agent
-        run: target/pkgroot/usr/local/libexec/usage-agent --dry-run
+        run: |
+          target/pkgroot/usr/local/libexec/usage-agent --dry-run
+          RUST_LOG=debug target/pkgroot/usr/local/libexec/usage-agent --dump-now-playing
+          # Nothing plays on the runner: the script must still succeed.
+          osascript -l JavaScript src/now_playing.jxa
       - uses: actions/upload-artifact@v7
         with:
           name: usage-agent-dmg

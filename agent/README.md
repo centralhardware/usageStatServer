@@ -11,7 +11,7 @@ blocks and posts them to `POST /api/usage` every minute. It stays resident (laun
 - For a browser, the front tab's domain is recorded too (asked via AppleScript when the title
   changes; macOS asks once per browser to allow Automation). Each app's declared category
   (LSApplicationCategoryType) is recorded with its blocks.
-- Every 10 s it checks what plays video (the app holding a display-sleep power assertion) and,
+- Every second it checks what plays video (the app holding a display-sleep power assertion) and,
   for a browser, the front tab's domain when playback starts (kept while it plays on, since
   browsers don't say which tab plays); those stretches go to `mac_media`.
 - No input for 5 min, a locked screen or sleep (a gap between samples) is an `away` block with that reason.
