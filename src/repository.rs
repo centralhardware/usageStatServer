@@ -96,7 +96,29 @@ impl UsageRepository {
         Ok(changed.len())
     }
 
-    async fn insert<T: clickhouse::Row + serde::Serialize>(&self, table: &str, rows: &[T]) -> Result<(), clickhouse::error::Error>
+    /// Videos played but not looked up yet.
+    pub async fn new_youtube_videos(&self) -> Result<Vec<String>, clickhouse::error::Error> {
+        self.client
+            .query(
+                "SELECT DISTINCT extract(url, 'v=([A-Za-z0-9_-]{11})') AS id FROM mac_media \
+                 WHERE id != '' AND id NOT IN (SELECT video_id FROM youtube_videos)",
+            )
+            .fetch_all()
+            .await
+    }
+
+    /// Channels never looked up, or not for a week.
+    pub async fn due_youtube_channels(&self) -> Result<Vec<String>, clickhouse::error::Error> {
+        self.client
+            .query(
+                "SELECT DISTINCT channel_id FROM youtube_videos WHERE channel_id != '' AND channel_id NOT IN \
+                 (SELECT channel_id FROM youtube_channels WHERE fetched_at > now() - INTERVAL 7 DAY)",
+            )
+            .fetch_all()
+            .await
+    }
+
+    pub async fn insert<T: clickhouse::Row + serde::Serialize>(&self, table: &str, rows: &[T]) -> Result<(), clickhouse::error::Error>
     where
         for<'a> T: clickhouse::RowWrite<Value<'a> = T>,
     {

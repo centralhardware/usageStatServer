@@ -162,6 +162,8 @@ pub struct Playing {
     /// From Now Playing, when macOS hands it out.
     pub title: String,
     pub artist: String,
+    /// The video's link when the playing tab is a YouTube video.
+    pub url: String,
 }
 
 /// Turns "what plays video now" samples into media blocks: a block runs while the same
@@ -202,13 +204,22 @@ impl MediaTracker {
         self.last_tick = Some(now);
         match (playing, &self.current) {
             (None, _) => self.close(now, &mut out),
-            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source && p.title == b.title => {}
+            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source && p.title == b.title
+                && (p.url == b.url || p.url.is_empty() || b.url.is_empty()) =>
+            {
+                // The tab can be found a moment after playback starts.
+                if !p.url.is_empty()
+                    && let Some(b) = self.current.as_mut()
+                {
+                    b.url = p.url.clone();
+                }
+            }
             (Some(p), _) => {
                 self.close(now, &mut out);
                 self.current = Some(MediaBlock {
                     device_id: self.device.clone(), device_name: self.device_name.clone(), user_name: self.user_name.clone(), source: p.source.clone(),
                     bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), title: p.title.clone(),
-                    artist: p.artist.clone(), start_at: now, stop_at: now,
+                    artist: p.artist.clone(), url: p.url.clone(), start_at: now, stop_at: now,
                 });
             }
         }
@@ -246,6 +257,25 @@ pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str) -> Option<&'a 
         return None;
     }
     tabs.iter().find(|(_, name)| name.to_lowercase().contains(&t)).map(|(url, _)| url.as_str())
+}
+
+/// A YouTube watch, Shorts or live link as its plain https://www.youtube.com/watch?v=<id>;
+/// None for any other page: media blocks carry no other address.
+pub fn youtube_video(url: &str) -> Option<String> {
+    if !matches!(domain(url)?.as_str(), "youtube.com" | "m.youtube.com" | "music.youtube.com") {
+        return None;
+    }
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let (_, path) = rest.split('#').next()?.split_once('/')?;
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let id = if path == "watch" {
+        query.split('&').find_map(|p| p.strip_prefix("v="))?
+    } else {
+        let (kind, id) = path.split_once('/')?;
+        matches!(kind, "shorts" | "live").then(|| id.trim_end_matches('/'))?
+    };
+    (id.len() == 11 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
+        .then(|| format!("https://www.youtube.com/watch?v={id}"))
 }
 
 /// The host of a URL without "www.", e.g. "https://www.youtube.com/watch?v=x" → "youtube.com".
@@ -371,6 +401,30 @@ mod tests {
         assert_eq!(tab_playing(&tabs, "clear as mud!! come see me"), Some("https://www.youtube.com/watch?v=1"));
         assert_eq!(tab_playing(&tabs, "something else"), None);
         assert_eq!(tab_playing(&tabs, " "), None);
+    }
+
+    #[test]
+    fn youtube_links() {
+        let v = Some("https://www.youtube.com/watch?v=abcdefghi-_".to_string());
+        assert_eq!(youtube_video("https://www.youtube.com/watch?list=PL1&v=abcdefghi-_&t=5s#x"), v);
+        assert_eq!(youtube_video("https://m.youtube.com/shorts/abcdefghi-_"), v);
+        assert_eq!(youtube_video("https://www.youtube.com/live/abcdefghi-_?si=1"), v);
+        assert_eq!(youtube_video("https://www.youtube.com/@someone"), None);
+        assert_eq!(youtube_video("https://www.youtube.com/watch?v=short"), None);
+        assert_eq!(youtube_video("https://example.com/watch?v=abcdefghi-_"), None);
+    }
+
+    #[test]
+    fn media_link_found_late_joins_its_block() {
+        let mut m = MediaTracker::new("uuid", "mac", "alex");
+        let p = Playing { bundle_id: "b".into(), source: "youtube.com".into(), title: "t".into(), ..Default::default() };
+        let linked = Playing { url: "https://www.youtube.com/watch?v=abcdefghi-_".into(), ..p.clone() };
+        m.tick(0, Some(&p), 30_000);
+        assert!(m.tick(3_000, Some(&linked), 30_000).is_empty());
+        assert!(m.tick(4_000, Some(&p), 30_000).is_empty());
+        assert_eq!((m.current().unwrap().url.as_str(), m.current().unwrap().start_at), (linked.url.as_str(), 0));
+        let other = Playing { url: "https://www.youtube.com/watch?v=zzzzzzzzzzz".into(), ..p };
+        assert_eq!(m.tick(5_000, Some(&other), 30_000).len(), 1);
     }
 
     #[test]
