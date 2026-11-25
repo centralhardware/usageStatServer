@@ -1,13 +1,36 @@
 //! Looks up the YouTube videos in `mac_media.url` and their channels with the YouTube Data API
 //! (videos.list and channels.list: one quota unit per 50 ids, of 10 000 a day).
 
-use crate::repository::UsageRepository;
+use crate::repository::{Unlinked, UsageRepository};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const API: &str = "https://www.googleapis.com/youtube/v3";
 /// The API's limit of ids per request.
 const PAGE: usize = 50;
+/// A search costs 100 quota units, so this leaves a fifth of the day's 10 000 to the lookups.
+const SEARCHES_PER_DAY: u64 = 80;
+const SEARCHES_PER_RUN: u64 = 5;
+
+#[derive(clickhouse::Row, Serialize)]
+struct Search {
+    title: String,
+    artist: String,
+    video_id: String,
+    searched_at: i64,
+}
+
+/// A search.list result: there the id is an object.
+#[derive(Deserialize)]
+struct Hit {
+    id: HitId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HitId {
+    video_id: String,
+}
 
 #[derive(Debug, PartialEq, clickhouse::Row, Serialize)]
 pub struct Video {
@@ -63,6 +86,7 @@ struct Item {
 #[serde(default, rename_all = "camelCase")]
 struct Snippet {
     channel_id: String,
+    channel_title: String,
     title: String,
     description: String,
     category_id: String,
@@ -153,6 +177,14 @@ fn videos(ids: &[String], items: Vec<Item>, now: i64) -> Vec<Video> {
         .collect()
 }
 
+/// The one video with exactly this title and channel; None when there is none or several.
+fn exact(p: &Unlinked, items: &[Item]) -> Option<String> {
+    let same = |i: &&Item| i.snippet.title.trim() == p.title.trim() && i.snippet.channel_title.trim() == p.artist.trim();
+    let mut found = items.iter().filter(same);
+    let first = found.next()?;
+    found.next().is_none().then(|| first.id.clone())
+}
+
 fn channel(id: &str, i: Item, now: i64) -> Channel {
     Channel {
         url: format!("https://www.youtube.com/channel/{id}"),
@@ -185,19 +217,41 @@ impl YouTube {
     }
 
     async fn list(&self, resource: &str, part: &str, ids: &[String]) -> Result<Vec<Item>, Error> {
+        self.get(resource, &[("part", part), ("id", ids.join(",").as_str()), ("maxResults", "50")]).await
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, resource: &str, query: &[(&str, &str)]) -> Result<Vec<T>, Error> {
         let resp = self
             .http
             .get(format!("{API}/{resource}"))
             // A header, so that the key is in no URL an error message might print.
             .header("X-Goog-Api-Key", &self.key)
-            .query(&[("part", part), ("id", ids.join(",").as_str()), ("maxResults", "50")])
+            .query(query)
             .send()
             .await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("YouTube {resource}: HTTP {status}: {}", resp.text().await.unwrap_or_default()).into());
         }
-        Ok(resp.json::<List<Item>>().await?.items)
+        Ok(resp.json::<List<T>>().await?.items)
+    }
+
+    /// Finds the links of plays recorded without one, by searching for their title and channel.
+    pub async fn backfill(&self, repo: &UsageRepository) -> Result<(), Error> {
+        for p in repo.unlinked_plays(SEARCHES_PER_RUN, SEARCHES_PER_DAY).await? {
+            let q = format!("{} {}", p.title, p.artist);
+            let hits: Vec<Hit> = self.get("search", &[("part", "id"), ("type", "video"), ("maxResults", "10"), ("q", q.as_str())]).await?;
+            let ids: Vec<String> = hits.into_iter().map(|h| h.id.video_id).collect();
+            // Search titles are HTML-escaped and cut; videos.list has them as they are.
+            let items = if ids.is_empty() { Vec::new() } else { self.list("videos", "snippet", &ids).await? };
+            let id = exact(&p, &items).unwrap_or_default();
+            if !id.is_empty() {
+                repo.link_plays(&p, &format!("https://www.youtube.com/watch?v={id}")).await?;
+            }
+            let searched_at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+            repo.insert("youtube_searches", &[Search { title: p.title, artist: p.artist, video_id: id, searched_at }]).await?;
+        }
+        Ok(())
     }
 
     /// Looks up everything missing or due; returns how many videos and channels were saved.
@@ -234,6 +288,19 @@ mod tests {
         let rows = videos(&["bbbbbbbbbbb".into(), "aaaaaaaaaaa".into()], list.items, 7);
         assert_eq!((rows[0].video_id.as_str(), rows[0].channel_id.as_str()), ("bbbbbbbbbbb", ""));
         assert_eq!((rows[1].channel_id.as_str(), rows[1].views, rows[1].likes), ("UC1", 12, 0));
+    }
+
+    #[test]
+    fn only_a_single_exact_match_counts() {
+        let list: List<Item> = serde_json::from_str(
+            r#"{"items":[{"id":"a","snippet":{"title":"T","channelTitle":"C"}},{"id":"b","snippet":{"title":"T","channelTitle":"Other"}},
+                {"id":"c","snippet":{"title":"U","channelTitle":"C"}},{"id":"d","snippet":{"title":"U","channelTitle":"C"}}]}"#,
+        )
+        .unwrap();
+        let p = |title: &str| Unlinked { title: title.into(), artist: "C".into() };
+        assert_eq!(exact(&p("T"), &list.items).as_deref(), Some("a"));
+        assert_eq!(exact(&p("U"), &list.items), None);
+        assert_eq!(exact(&p("X"), &list.items), None);
     }
 
     #[test]

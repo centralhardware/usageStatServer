@@ -75,7 +75,13 @@ async fn main() {
             tokio::spawn(async move {
                 loop {
                     let wait = match youtube.enrich(&repo).await {
-                        Ok(_) => 60,
+                        Ok(_) => match youtube.backfill(&repo).await {
+                            Ok(()) => 60,
+                            Err(e) => {
+                                tracing::error!("YouTube search failed: {e}");
+                                600
+                            }
+                        },
                         Err(e) => {
                             tracing::error!("YouTube lookup failed: {e}");
                             600

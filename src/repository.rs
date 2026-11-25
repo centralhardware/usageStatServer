@@ -1,7 +1,7 @@
 use crate::titles::{self, Rule};
 use clickhouse::Client;
 use std::sync::{Arc, RwLock};
-use usage_model::{UsageBatch, UsageBlock};
+use usage_model::{MediaBlock, UsageBatch, UsageBlock};
 
 /// What the routes need from storage, so they can be tested against a fake.
 pub trait Store: Send + Sync + 'static {
@@ -31,6 +31,19 @@ impl Store for UsageRepository {
         }
         Ok(())
     }
+}
+
+/// Plays on YouTube without a link: the source says so, or a YouTube tab had that very title (the
+/// agent may have filed the play under another tab). Nothing else is ever searched for.
+const UNLINKED: &str = "url = '' AND title != '' AND artist != '' AND stop_at < now() - INTERVAL 1 HOUR \
+     AND (source = 'youtube.com' OR title IN (SELECT replaceRegexpOne(title, ' - YouTube$', '') FROM mac_usage \
+     WHERE domain = 'youtube.com' AND endsWith(title, ' - YouTube')))";
+
+/// A title and channel to look for.
+#[derive(clickhouse::Row, serde::Deserialize)]
+pub struct Unlinked {
+    pub title: String,
+    pub artist: String,
 }
 
 pub struct UsageRepository {
@@ -116,6 +129,41 @@ impl UsageRepository {
             )
             .fetch_all()
             .await
+    }
+
+    /// Plays to search for, newest first; at most `limit`, and `per_day` in any 24 hours.
+    pub async fn unlinked_plays(&self, limit: u64, per_day: u64) -> Result<Vec<Unlinked>, clickhouse::error::Error> {
+        let done: u64 =
+            self.client.query("SELECT count() FROM youtube_searches WHERE searched_at > now() - INTERVAL 1 DAY").fetch_one().await?;
+        let limit = limit.min(per_day.saturating_sub(done));
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.client
+            .query(&format!(
+                "SELECT title, artist FROM mac_media FINAL WHERE {UNLINKED} \
+                 AND (title, artist) NOT IN (SELECT title, artist FROM youtube_searches) \
+                 GROUP BY title, artist ORDER BY max(start_at) DESC LIMIT {limit}"
+            ))
+            .fetch_all()
+            .await
+    }
+
+    /// Gives every unlinked play of this title and channel its link (same stop_at, so the rewrite
+    /// replaces the row).
+    pub async fn link_plays(&self, p: &Unlinked, url: &str) -> Result<(), clickhouse::error::Error> {
+        let mut rows: Vec<MediaBlock> = self
+            .client
+            .query(&format!("SELECT ?fields FROM mac_media FINAL WHERE title = ? AND artist = ? AND {UNLINKED}"))
+            .bind(&p.title)
+            .bind(&p.artist)
+            .fetch_all()
+            .await?;
+        for r in &mut rows {
+            r.url = url.to_owned();
+            r.source = "youtube.com".into();
+        }
+        if rows.is_empty() { Ok(()) } else { self.insert("mac_media", &rows).await }
     }
 
     pub async fn insert<T: clickhouse::Row + serde::Serialize>(&self, table: &str, rows: &[T]) -> Result<(), clickhouse::error::Error>

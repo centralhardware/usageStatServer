@@ -55,6 +55,8 @@ the player app's name), the app, start/stop. Also re-sent while open: query with
 With `YOUTUBE_API_KEY` (YouTube Data API v3) the server looks up every video in `mac_media.url`
 (`youtube_videos`) and its channel (`youtube_channels`: link, handle, country, subscribers, topics…;
 refreshed weekly). View `youtube_watched` joins them to what played.
+A YouTube play stored without a link is searched for once by title and channel (80 a day, `youtube_searches`)
+and gets the link only when exactly one video has both.
 
 ### Classification (RescueTime style)
 
