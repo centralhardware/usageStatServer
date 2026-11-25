@@ -34,6 +34,10 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (26, "teams_title_rules", include_str!("../migrations/V26__teams_title_rules.sql")),
     (27, "add_user_name_to_mac_usage", include_str!("../migrations/V27__add_user_name_to_mac_usage.sql")),
     (28, "add_user_name_to_mac_media", include_str!("../migrations/V28__add_user_name_to_mac_media.sql")),
+    (29, "add_url_to_mac_media", include_str!("../migrations/V29__add_url_to_mac_media.sql")),
+    (30, "create_youtube_videos_table", include_str!("../migrations/V30__create_youtube_videos_table.sql")),
+    (31, "create_youtube_channels_table", include_str!("../migrations/V31__create_youtube_channels_table.sql")),
+    (32, "create_view_youtube_watched", include_str!("../migrations/V32__create_view_youtube_watched.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]

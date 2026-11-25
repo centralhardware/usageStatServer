@@ -2,6 +2,7 @@ mod migrations;
 mod repository;
 mod routes;
 mod titles;
+mod youtube;
 
 use crate::repository::UsageRepository;
 use crate::routes::usage_routes;
@@ -63,6 +64,27 @@ async fn main() {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
             }
         });
+    }
+
+    // YouTube videos and channels behind the media blocks, looked up every minute.
+    match env::var("YOUTUBE_API_KEY").ok().filter(|k| !k.is_empty()) {
+        None => tracing::warn!("YOUTUBE_API_KEY is not set: YouTube videos and channels are not looked up"),
+        Some(key) => {
+            let repo = repository.clone();
+            let youtube = youtube::YouTube::new(key).expect("failed to build the HTTP client");
+            tokio::spawn(async move {
+                loop {
+                    let wait = match youtube.enrich(&repo).await {
+                        Ok(_) => 60,
+                        Err(e) => {
+                            tracing::error!("YouTube lookup failed: {e}");
+                            600
+                        }
+                    };
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                }
+            });
+        }
     }
 
     let token = env::var("API_TOKEN").ok().filter(|t| !t.is_empty());

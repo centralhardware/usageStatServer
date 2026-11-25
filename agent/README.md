@@ -13,7 +13,8 @@ blocks and posts them to `POST /api/usage` every minute. It stays resident (laun
   (LSApplicationCategoryType) is recorded with its blocks.
 - Every second it checks what plays video (the app holding a display-sleep power assertion) and,
   for a browser, the front tab's domain when playback starts (kept while it plays on, since
-  browsers don't say which tab plays); those stretches go to `mac_media`.
+  browsers don't say which tab plays); those stretches go to `mac_media`. When the tab titled like the
+  playing media is a YouTube video, its link is sent too (no other address is sent with media).
 - No input for 5 min, a locked screen or sleep (a gap between samples) is an `away` block with that reason.
 - The open block is re-sent with a later stop on every flush; blocks the server hasn't taken wait in
   `~/Library/Application Support/usage-agent/queue.jsonl`.

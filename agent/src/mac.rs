@@ -288,17 +288,21 @@ pub fn playing() -> Option<Playing> {
         let name = app.localizedName().map_or_else(|| bundle.clone(), |n| n.to_string());
         // Safari with a private front window: whatever plays is likely in it, so no title or site.
         if bundle == "com.apple.Safari" && LAST_PRIVATE.with_borrow(|(_, p)| *p) {
-            return Some(Playing { bundle_id: bundle, app_name: name, source: PRIVATE_TITLE.into(), title: String::new(), artist: String::new() });
+            return Some(Playing { bundle_id: bundle, app_name: name, source: PRIVATE_TITLE.into(), title: String::new(), artist: String::new(), url: String::new() });
         }
         // Asked only here, so that osascript doesn't run every second while nothing plays.
         let np = np.get_or_insert_with(now_playing);
         // Now Playing names the media when it belongs to this app; then the tab showing that
         // title is the one playing. Otherwise fall back to the tab in front when playback began.
         let (title, artist) = np.as_ref().filter(|n| n.bundle == bundle).map(|n| (n.title.clone(), n.artist.clone())).unwrap_or_default();
-        let source = tab_with_title(&bundle, &title)
+        let tab = tab_with_title(&bundle, &title);
+        let url = tab.as_deref().and_then(usage_agent::tracker::youtube_video).unwrap_or_default();
+        let source = tab
+            .as_deref()
+            .and_then(usage_agent::tracker::domain)
             .or_else(|| playing_source(&bundle))
             .unwrap_or_else(|| name.clone());
-        return Some(Playing { bundle_id: bundle, app_name: name, source, title, artist });
+        return Some(Playing { bundle_id: bundle, app_name: name, source, title, artist, url });
     }
     PLAYING_SOURCE.with_borrow_mut(|v| *v = None);
     TITLE_SOURCE.with_borrow_mut(|v| *v = None);
@@ -329,7 +333,7 @@ fn tab_url_script_owner(bundle: &str) -> Option<String> {
 /// since a tab's title can lag Now Playing when the next video starts.
 const SOURCE_RETRY: Duration = Duration::from_secs(3);
 
-/// A remembered tab lookup: a domain is kept, a miss only for SOURCE_RETRY.
+/// A remembered tab lookup: an answer is kept, a miss only for SOURCE_RETRY.
 struct Lookup<K> {
     key: K,
     found: Option<String>,
@@ -416,9 +420,11 @@ fn tabs(bundle_id: &str) -> Vec<(String, String)> {
         Some(_) => "title",
         None => return Vec::new(),
     };
+    // A window without tabs or a tab without a URL errors: skip it, not the whole list.
+    // `tab` inside the tell block would be the browser's own class, hence `sep`.
     let script = format!(
-        "set out to \"\"\ntell application id \"{bundle_id}\"\nrepeat with w in windows\nrepeat with t in tabs of w\n\
-         set out to out & (URL of t) & tab & ({title} of t) & linefeed\nend repeat\nend repeat\nend tell\nreturn out"
+        "set out to \"\"\nset sep to character id 9\ntell application id \"{bundle_id}\"\nrepeat with w in windows\ntry\nrepeat with t in tabs of w\ntry\n\
+         set out to out & (URL of t) & sep & ({title} of t) & linefeed\nend try\nend repeat\nend try\nend repeat\nend tell\nreturn out"
     );
     let Ok(out) = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).output() else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout)
@@ -427,7 +433,7 @@ fn tabs(bundle_id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The domain of the tab showing `title`; the tabs are listed once per title, not every sample.
+/// The URL of the tab showing `title`; the tabs are listed once per title, not every sample.
 fn tab_with_title(bundle_id: &str, title: &str) -> Option<String> {
     if title.is_empty() {
         return None;
@@ -437,7 +443,7 @@ fn tab_with_title(bundle_id: &str, title: &str) -> Option<String> {
         return src;
     }
     let tabs = tabs(bundle_id);
-    let src = usage_agent::tracker::tab_playing(&tabs, title).and_then(usage_agent::tracker::domain);
+    let src = usage_agent::tracker::tab_playing(&tabs, title).map(str::to_owned);
     TITLE_SOURCE.with_borrow_mut(|v| *v = Some(Lookup::new((bundle_id.to_owned(), title.to_owned()), src.clone())));
     src
 }

@@ -74,6 +74,9 @@ pub struct MediaBlock {
     pub title: String,
     #[serde(default)]
     pub artist: String,
+    /// The YouTube video's link (https://www.youtube.com/watch?v=<id>); empty for anything else.
+    #[serde(default)]
+    pub url: String,
     /// Unix milliseconds.
     pub start_at: i64,
     pub stop_at: i64,
@@ -85,6 +88,9 @@ impl MediaBlock {
             if v.is_empty() || v.chars().count() > 256 {
                 return Some(format!("media {name} must be 1-256 characters"));
             }
+        }
+        if self.url.chars().count() > 256 {
+            return Some("media url must be at most 256 characters".into());
         }
         if self.title.chars().count() > 1024 || self.artist.chars().count() > 1024 {
             return Some("media title and artist must be at most 1024 characters".into());

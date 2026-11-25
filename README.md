@@ -20,6 +20,7 @@ The macOS agent that sends it lives in [`agent/`](agent/README.md).
 | `CH_DB` | `default` |
 | `CH_USER` / `CH_PASSWORD` | `default` / empty |
 | `API_TOKEN` | unset (no auth, logged as a warning) |
+| `YOUTUBE_API_KEY` | unset (YouTube lookups off) |
 | `PORT` | `8080` |
 
 ## Schema
@@ -47,6 +48,13 @@ LSApplicationCategoryType, Screen Time style) feed classification.
 
 Table `mac_media`: one row per stretch of video playing: `source` (the browser tab's domain, or
 the player app's name), the app, start/stop. Also re-sent while open: query with `FINAL`.
+`url` is the video's link when the playing tab is a YouTube video.
+
+### YouTube
+
+With `YOUTUBE_API_KEY` (YouTube Data API v3) the server looks up every video in `mac_media.url`
+(`youtube_videos`) and its channel (`youtube_channels`: link, handle, country, subscribers, topics…;
+refreshed weekly). View `youtube_watched` joins them to what played.
 
 ### Classification (RescueTime style)
 
