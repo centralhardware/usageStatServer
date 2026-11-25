@@ -8,6 +8,30 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const API: &str = "https://www.googleapis.com/youtube/v3";
 /// The API's limit of ids per request.
 const PAGE: usize = 50;
+/// A search costs 100 quota units, so this leaves a fifth of the day's 10 000 to the lookups.
+const SEARCHES_PER_DAY: u64 = 80;
+const SEARCHES_PER_RUN: u64 = 5;
+const CHANNEL_PARTS: &str = "snippet,statistics,topicDetails,brandingSettings";
+
+#[derive(clickhouse::Row, Serialize)]
+struct Artist {
+    artist: String,
+    channel_id: String,
+    guess: u8,
+    searched_at: i64,
+}
+
+/// A search.list result: there the id is an object.
+#[derive(Deserialize)]
+struct Hit {
+    id: HitId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HitId {
+    channel_id: String,
+}
 
 #[derive(Debug, PartialEq, clickhouse::Row, Serialize)]
 pub struct Video {
@@ -153,6 +177,19 @@ fn videos(ids: &[String], items: Vec<Item>, now: i64) -> Vec<Video> {
         .collect()
 }
 
+/// The channel of that name with the most subscribers, and whether others have the name too.
+fn named(artist: &str, items: Vec<Item>) -> Option<(Item, bool)> {
+    let name = artist.trim().to_lowercase();
+    let mut same: Vec<Item> = items.into_iter().filter(|i| i.snippet.title.trim().to_lowercase() == name).collect();
+    same.sort_by_key(|i| i.statistics.subscriber_count);
+    let best = same.pop()?;
+    Some((best, !same.is_empty()))
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
 fn channel(id: &str, i: Item, now: i64) -> Channel {
     Channel {
         url: format!("https://www.youtube.com/channel/{id}"),
@@ -185,24 +222,48 @@ impl YouTube {
     }
 
     async fn list(&self, resource: &str, part: &str, ids: &[String]) -> Result<Vec<Item>, Error> {
+        self.get(resource, &[("part", part), ("id", ids.join(",").as_str()), ("maxResults", "50")]).await
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, resource: &str, query: &[(&str, &str)]) -> Result<Vec<T>, Error> {
         let resp = self
             .http
             .get(format!("{API}/{resource}"))
             // A header, so that the key is in no URL an error message might print.
             .header("X-Goog-Api-Key", &self.key)
-            .query(&[("part", part), ("id", ids.join(",").as_str()), ("maxResults", "50")])
+            .query(query)
             .send()
             .await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("YouTube {resource}: HTTP {status}: {}", resp.text().await.unwrap_or_default()).into());
         }
-        Ok(resp.json::<List<Item>>().await?.items)
+        Ok(resp.json::<List<T>>().await?.items)
+    }
+
+    /// Finds the channels of artists whose plays have no link, by their exact name.
+    pub async fn find_artists(&self, repo: &UsageRepository) -> Result<(), Error> {
+        for artist in repo.unknown_artists(SEARCHES_PER_RUN, SEARCHES_PER_DAY).await? {
+            let query = [("part", "id"), ("type", "channel"), ("maxResults", "25"), ("q", artist.as_str())];
+            let ids: Vec<String> = self.get::<Hit>("search", &query).await?.into_iter().map(|h| h.id.channel_id).collect();
+            let items = if ids.is_empty() { Vec::new() } else { self.list("channels", CHANNEL_PARTS, &ids).await? };
+            let now = now_ms();
+            let (channel_id, guess) = match named(&artist, items) {
+                None => (String::new(), 0),
+                Some((item, guess)) => {
+                    let id = item.id.clone();
+                    repo.insert("youtube_channels", &[channel(&id, item, now)]).await?;
+                    (id, guess.into())
+                }
+            };
+            repo.insert("youtube_artists", &[Artist { artist, channel_id, guess, searched_at: now }]).await?;
+        }
+        Ok(())
     }
 
     /// Looks up everything missing or due; returns how many videos and channels were saved.
     pub async fn enrich(&self, repo: &UsageRepository) -> Result<(usize, usize), Error> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let now = now_ms();
         let ids = repo.new_youtube_videos().await?;
         for page in ids.chunks(PAGE) {
             let items = self.list("videos", "snippet,contentDetails,statistics", page).await?;
@@ -211,7 +272,7 @@ impl YouTube {
         let due = repo.due_youtube_channels().await?;
         let mut saved = 0;
         for page in due.chunks(PAGE) {
-            let items = self.list("channels", "snippet,statistics,topicDetails,brandingSettings", page).await?;
+            let items = self.list("channels", CHANNEL_PARTS, page).await?;
             let rows: Vec<Channel> = by_id(page, items).map(|(id, i)| channel(id, i, now)).collect();
             repo.insert("youtube_channels", &rows).await?;
             saved += rows.len();
@@ -234,6 +295,23 @@ mod tests {
         let rows = videos(&["bbbbbbbbbbb".into(), "aaaaaaaaaaa".into()], list.items, 7);
         assert_eq!((rows[0].video_id.as_str(), rows[0].channel_id.as_str()), ("bbbbbbbbbbb", ""));
         assert_eq!((rows[1].channel_id.as_str(), rows[1].views, rows[1].likes), ("UC1", 12, 0));
+    }
+
+    #[test]
+    fn the_biggest_channel_of_the_name_wins() {
+        let items = || {
+            serde_json::from_str::<List<Item>>(
+                r#"{"items":[{"id":"a","snippet":{"title":"Name"},"statistics":{"subscriberCount":"5"}},
+                    {"id":"b","snippet":{"title":"name "},"statistics":{"subscriberCount":"50"}},
+                    {"id":"c","snippet":{"title":"Name Two"},"statistics":{"subscriberCount":"500"}}]}"#,
+            )
+            .unwrap()
+            .items
+        };
+        let best = |n: &str| named(n, items()).map(|(i, guess)| (i.id, guess));
+        assert_eq!(best("Name"), Some(("b".into(), true)));
+        assert_eq!(best("Name Two"), Some(("c".into(), false)));
+        assert_eq!(best("Nam"), None);
     }
 
     #[test]

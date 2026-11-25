@@ -55,6 +55,8 @@ the player app's name), the app, start/stop. Also re-sent while open: query with
 With `YOUTUBE_API_KEY` (YouTube Data API v3) the server looks up every video in `mac_media.url`
 (`youtube_videos`) and its channel (`youtube_channels`: link, handle, country, subscribers, topics…;
 refreshed weekly). View `youtube_watched` joins them to what played.
+An artist none of whose plays has a link is searched for once as a channel of exactly that name (80 a day,
+`youtube_artists`); view `youtube_artist_channels` has the channel per artist, `guess = 1` when several share the name.
 
 ### Classification (RescueTime style)
 

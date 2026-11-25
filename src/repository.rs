@@ -111,9 +111,34 @@ impl UsageRepository {
     pub async fn due_youtube_channels(&self) -> Result<Vec<String>, clickhouse::error::Error> {
         self.client
             .query(
-                "SELECT DISTINCT channel_id FROM youtube_videos WHERE channel_id != '' AND channel_id NOT IN \
+                "SELECT DISTINCT channel_id FROM (SELECT channel_id FROM youtube_videos UNION ALL SELECT channel_id FROM youtube_artists) \
+                 WHERE channel_id != '' AND channel_id NOT IN \
                  (SELECT channel_id FROM youtube_channels WHERE fetched_at > now() - INTERVAL 7 DAY)",
             )
+            .fetch_all()
+            .await
+    }
+
+    /// Artists to search for as a channel, the latest first; at most `limit`, and `per_day` in any
+    /// 24 hours. Only of plays on YouTube without a link: the source says so, or a YouTube tab had
+    /// that very title (the agent may have filed the play under another tab).
+    pub async fn unknown_artists(&self, limit: u64, per_day: u64) -> Result<Vec<String>, clickhouse::error::Error> {
+        let done: u64 =
+            self.client.query("SELECT count() FROM youtube_artists WHERE searched_at > now() - INTERVAL 1 DAY").fetch_one().await?;
+        let limit = limit.min(per_day.saturating_sub(done));
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.client
+            .query(&format!(
+                "SELECT toString(artist) AS name FROM mac_media FINAL \
+                 WHERE url = '' AND title != '' AND artist != '' AND stop_at < now() - INTERVAL 10 MINUTE \
+                 AND (source = 'youtube.com' OR title IN (SELECT replaceRegexpOne(title, ' - YouTube$', '') FROM mac_usage \
+                 WHERE domain = 'youtube.com' AND endsWith(title, ' - YouTube'))) \
+                 AND name NOT IN (SELECT toString(artist) FROM mac_media FINAL WHERE url != '') \
+                 AND name NOT IN (SELECT artist FROM youtube_artists) \
+                 GROUP BY name ORDER BY max(start_at) DESC LIMIT {limit}"
+            ))
             .fetch_all()
             .await
     }
