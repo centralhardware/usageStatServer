@@ -262,13 +262,17 @@ fn tab_url_script(bundle_id: &str) -> Option<&'static str> {
     }
 }
 
-fn tab_domain(bundle_id: &str) -> Option<String> {
+fn front_url(bundle_id: &str) -> Option<String> {
     let expr = tab_url_script(bundle_id)?;
     let out = std::process::Command::new("/usr/bin/osascript")
         .args(["-e", &format!("tell application id \"{bundle_id}\" to get {expr}")])
         .output()
         .ok()?;
-    usage_agent::tracker::domain(String::from_utf8_lossy(&out.stdout).trim())
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_owned()).filter(|u| !u.is_empty())
+}
+
+fn tab_domain(bundle_id: &str) -> Option<String> {
+    usage_agent::tracker::domain(&front_url(bundle_id)?)
 }
 
 /// The app playing video now, if any, with the browser tab's domain as its source. A web
@@ -443,7 +447,8 @@ fn tab_with_title(bundle_id: &str, title: &str) -> Option<String> {
         return src;
     }
     let tabs = tabs(bundle_id);
-    let src = usage_agent::tracker::tab_playing(&tabs, title).map(str::to_owned);
+    let front = front_url(bundle_id);
+    let src = usage_agent::tracker::tab_playing(&tabs, title, front.as_deref()).map(str::to_owned);
     TITLE_SOURCE.with_borrow_mut(|v| *v = Some(Lookup::new((bundle_id.to_owned(), title.to_owned()), src.clone())));
     src
 }
