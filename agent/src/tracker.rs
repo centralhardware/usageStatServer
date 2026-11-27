@@ -14,6 +14,9 @@ pub const TITLE_SETTLE_MS: i64 = 5_000;
 pub const MAX_BLOCK_MS: i64 = 3_600_000;
 /// A gap this long between two ticks means the Mac was asleep.
 pub const SLEEP_GAP_MS: i64 = 30_000;
+/// Media that stops for less than this and comes back (a pause, a seek, a missed sample) stays
+/// one block; a block without a title that gets one within it takes that title.
+pub const MEDIA_GRACE_MS: i64 = 10_000;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrontApp {
@@ -174,11 +177,13 @@ pub struct MediaTracker {
     user_name: String,
     current: Option<MediaBlock>,
     last_tick: Option<i64>,
+    /// When the current block stopped playing, while it may still resume.
+    paused_at: Option<i64>,
 }
 
 impl MediaTracker {
     pub fn new(device: impl Into<String>, device_name: impl Into<String>, user_name: impl Into<String>) -> Self {
-        Self { device: device.into(), device_name: device_name.into(), user_name: user_name.into(), current: None, last_tick: None }
+        Self { device: device.into(), device_name: device_name.into(), user_name: user_name.into(), current: None, last_tick: None, paused_at: None }
     }
 
     pub fn current(&self) -> Option<&MediaBlock> {
@@ -199,12 +204,24 @@ impl MediaTracker {
         if let Some(last) = self.last_tick
             && now - last >= gap_ms
         {
-            self.close(last, &mut out);
+            let at = self.paused_at.take().unwrap_or(last);
+            self.close(at, &mut out);
         }
         self.last_tick = Some(now);
-        match (playing, &self.current) {
-            (None, _) => self.close(now, &mut out),
-            (Some(p), Some(b)) if p.bundle_id == b.bundle_id && p.source == b.source && p.title == b.title
+        let Some(p) = playing else {
+            // Not closed yet: playback may resume within MEDIA_GRACE_MS.
+            if self.current.is_some() {
+                let at = *self.paused_at.get_or_insert(now);
+                if now - at >= MEDIA_GRACE_MS {
+                    self.paused_at = None;
+                    self.close(at, &mut out);
+                }
+            }
+            return out;
+        };
+        let stopped = self.paused_at.take().unwrap_or(now);
+        match &self.current {
+            Some(b) if p.bundle_id == b.bundle_id && p.source == b.source && p.title == b.title
                 && (p.url == b.url || p.url.is_empty() || b.url.is_empty()) =>
             {
                 // The tab can be found a moment after playback starts.
@@ -214,8 +231,16 @@ impl MediaTracker {
                     b.url = p.url.clone();
                 }
             }
-            (Some(p), _) => {
-                self.close(now, &mut out);
+            // Between episodes Now Playing has no title for a moment: that belongs to the next one.
+            Some(b) if b.title.is_empty() && !p.title.is_empty() && p.bundle_id == b.bundle_id && p.source == b.source
+                && now - b.start_at < MEDIA_GRACE_MS =>
+            {
+                if let Some(b) = self.current.as_mut() {
+                    (b.title, b.artist, b.url) = (p.title.clone(), p.artist.clone(), p.url.clone());
+                }
+            }
+            _ => {
+                self.close(stopped, &mut out);
                 self.current = Some(MediaBlock {
                     device_id: self.device.clone(), device_name: self.device_name.clone(), user_name: self.user_name.clone(), source: p.source.clone(),
                     bundle_id: p.bundle_id.clone(), app_name: p.app_name.clone(), title: p.title.clone(),
@@ -412,9 +437,38 @@ mod tests {
         assert!(m.tick(10_000, Some(&yt), 30_000).is_empty());
         let out = m.tick(20_000, Some(&nf), 30_000);
         assert_eq!((out[0].source.as_str(), out[0].start_at, out[0].stop_at), ("youtube.com", 0, 20_000));
-        let out = m.tick(30_000, None, 30_000);
+        // Stopped: closed at the moment it stopped, once the grace period has passed.
+        assert!(m.tick(30_000, None, 30_000).is_empty());
+        let out = m.tick(40_000, None, 30_000);
         assert_eq!((out[0].source.as_str(), out[0].stop_at), ("netflix.com", 30_000));
         assert!(m.current().is_none());
+    }
+
+    #[test]
+    fn media_pause_and_untitled_start_stay_one_block() {
+        let mut m = MediaTracker::new("uuid", "mac", "alex");
+        let v = Playing { bundle_id: "b".into(), source: "site".into(), title: "Episode 1".into(), ..Default::default() };
+        m.tick(0, Some(&v), 30_000);
+        // A one-second pause: the same block goes on.
+        assert!(m.tick(5_000, None, 30_000).is_empty());
+        assert!(m.tick(6_000, Some(&v), 30_000).is_empty());
+        assert_eq!(m.current().unwrap().start_at, 0);
+        // The next episode loads without a title, then gets one: one block with that title.
+        let blank = Playing { title: String::new(), ..v.clone() };
+        m.tick(30_000, Some(&v), 30_000);
+        m.tick(59_000, Some(&v), 30_000);
+        let out = m.tick(60_000, Some(&blank), 30_000);
+        assert_eq!((out[0].title.as_str(), out[0].stop_at), ("Episode 1", 60_000));
+        assert_eq!(out[0].start_at, 0);
+        let e2 = Playing { title: "Episode 2".into(), ..v.clone() };
+        assert!(m.tick(63_000, Some(&e2), 30_000).is_empty());
+        assert_eq!((m.current().unwrap().title.as_str(), m.current().unwrap().start_at), ("Episode 2", 60_000));
+        // Stopped longer than the grace period: closed when it stopped.
+        m.tick(70_000, None, 30_000);
+        let out = m.tick(80_000, None, 30_000);
+        assert_eq!((out[0].title.as_str(), out[0].stop_at), ("Episode 2", 70_000));
+        assert!(m.tick(85_000, Some(&e2), 30_000).is_empty());
+        assert_eq!(m.current().map(|b| b.start_at), None);
     }
 
     #[test]

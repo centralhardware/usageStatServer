@@ -39,6 +39,9 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (31, "create_youtube_channels_table", include_str!("../migrations/V31__create_youtube_channels_table.sql")),
     (32, "create_view_youtube_watched", include_str!("../migrations/V32__create_view_youtube_watched.sql")),
     (33, "youtube_watched_youtube_only", include_str!("../migrations/V33__youtube_watched_youtube_only.sql")),
+    (34, "merge_split_media_plays", include_str!("../migrations/V34__merge_split_media_plays.sql")),
+    (35, "drop_merged_media_rows", include_str!("../migrations/V35__drop_merged_media_rows.sql")),
+    (36, "drop_short_untitled_media", include_str!("../migrations/V36__drop_short_untitled_media.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]
