@@ -97,10 +97,14 @@ pub fn parse(rules: &[Rule], bundle_id: &str, title: &str) -> Parsed {
 mod tests {
     use super::*;
 
-    /// The rules V11 and V26 insert, read from the migrations themselves: ('bundle', 'pattern')
+    /// The rules V11, V26 and V39 insert, read from the migrations themselves: ('bundle', 'pattern')
     /// tuples with ClickHouse string escaping (\\ → \\ in the regex).
     fn seed() -> Vec<Rule> {
-        let sql = [include_str!("../migrations/V11__reseed_title_rules.sql"), include_str!("../migrations/V26__teams_title_rules.sql")].concat();
+        let sql = [
+            include_str!("../migrations/V11__reseed_title_rules.sql"), include_str!("../migrations/V26__teams_title_rules.sql"),
+            include_str!("../migrations/V39__title_rules_new_apps.sql"),
+        ]
+        .concat();
         let rules: Vec<Rule> = sql
             .lines()
             .map(str::trim)
@@ -112,7 +116,7 @@ mod tests {
                 Rule::new(b, &p.replace("\\\\", "\\"), prio.trim_end_matches(')').parse().unwrap()).unwrap()
             })
             .collect();
-        assert_eq!(rules.len(), 16);
+        assert_eq!(rules.len(), 23);
         let mut rules = rules;
         rules.sort_by_key(|r| r.priority);
         rules
@@ -191,6 +195,27 @@ mod tests {
         assert_eq!(p(M, meeting), pair("Weekly Team Meeting", "contoso"));
         assert_eq!(f(M, meeting), kv(&[("account", "a.b@example.com")]));
         assert_eq!(p(M, "Calendar | contoso | a.b@example.com"), pair("Calendar", "contoso"));
+    }
+
+    #[test]
+    fn new_apps() {
+        const P: &str = "com.apple.Preview";
+        assert_eq!(p(P, "v1.0 - Sample Contract (1)-2.pdf – Page 3 of 12"), pair("v1.0 - Sample Contract (1)-2.pdf", ""));
+        assert_eq!(f(P, "report.pdf – Page 3 of 12"), kv(&[("page", "3"), ("pages", "12")]));
+        assert_eq!(p(P, "scan - copy.png"), pair("scan - copy.png", ""));
+        const W: &str = "com.apple.Passwords";
+        assert_eq!(p(W, "Searching “All” – 7 Items"), pair("All", ""));
+        assert_eq!(f(W, "Searching “All” – 7 Items"), kv(&[("search", "Searching"), ("items", "7")]));
+        assert_eq!(p(W, "All – 274 Items"), pair("All", ""));
+        assert_eq!(f(W, "Wi-Fi – 1 Item"), kv(&[("items", "1")]));
+        const J: &str = "net.java.openjdk.cmd";
+        let app = "(env-1) Client Application - 1.2.3 (user: jdoe)";
+        assert_eq!(p(J, app), pair("Client Application", "env-1"));
+        assert_eq!(f(J, app), kv(&[("version", "1.2.3"), ("user", "jdoe")]));
+        assert_eq!(p(J, "Client Application - 1.2.3 (user: jdoe)"), pair("Client Application", ""));
+        assert_eq!(p(J, "Login Dialog"), pair("Login Dialog", ""));
+        assert_eq!(p("com.apple.Pages", "v1.0 - Sample Contract (1)"), pair("v1.0 - Sample Contract", ""));
+        assert_eq!(p("com.apple.TextEdit", "TICKET-1 - service notes.md"), pair("TICKET-1 - service notes.md", ""));
     }
 
     #[test]
