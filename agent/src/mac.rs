@@ -271,6 +271,20 @@ fn front_url(bundle_id: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_owned()).filter(|u| !u.is_empty())
 }
 
+/// The current tab's URL of the browser window in full screen, if one is: a video shown full
+/// screen puts its window there, so that tab is the one playing. System Events (Accessibility)
+/// tells which window is full screen; the browser window with the same name gives the URL.
+fn fullscreen_url(bundle_id: &str) -> Option<String> {
+    let expr = tab_url_script(bundle_id)?.replace("front window", "w");
+    let script = format!(
+        "set n to \"\"\ntell application \"System Events\"\nrepeat with w in windows of (first application process whose bundle identifier is \"{bundle_id}\")\ntry\n\
+         if value of attribute \"AXFullScreen\" of w is true then set n to name of w\nend try\nend repeat\nend tell\nif n is \"\" then return \"\"\n\
+         tell application id \"{bundle_id}\"\nrepeat with w in windows\ntry\nif name of w is n then return {expr}\nend try\nend repeat\nend tell\nreturn \"\""
+    );
+    let out = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_owned()).filter(|u| !u.is_empty())
+}
+
 fn tab_domain(bundle_id: &str) -> Option<String> {
     usage_agent::tracker::domain(&front_url(bundle_id)?)
 }
@@ -438,18 +452,19 @@ fn tabs(bundle_id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The URL of the tab showing `title`; the tabs are listed once per title, not every sample.
+/// The URL of the playing tab: the full-screen one, else the tab showing `title`. Looked up once
+/// per title (an empty one included), not every sample.
 fn tab_with_title(bundle_id: &str, title: &str) -> Option<String> {
-    if title.is_empty() {
-        return None;
-    }
     let cached = TITLE_SOURCE.with_borrow(|v| v.as_ref().filter(|l| l.key.0 == bundle_id && l.key.1 == title).and_then(Lookup::fresh));
     if let Some(src) = cached {
         return src;
     }
-    let tabs = tabs(bundle_id);
-    let front = front_url(bundle_id);
-    let src = usage_agent::tracker::tab_playing(&tabs, title, front.as_deref()).map(str::to_owned);
+    // A full-screen window's tab is the one playing; otherwise match the tabs by title.
+    let src = fullscreen_url(bundle_id).or_else(|| {
+        let tabs = tabs(bundle_id);
+        let front = front_url(bundle_id);
+        usage_agent::tracker::tab_playing(&tabs, title, front.as_deref()).map(str::to_owned)
+    });
     TITLE_SOURCE.with_borrow_mut(|v| *v = Some(Lookup::new((bundle_id.to_owned(), title.to_owned()), src.clone())));
     src
 }
