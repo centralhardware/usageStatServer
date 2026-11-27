@@ -162,7 +162,7 @@ pub struct Playing {
     /// From Now Playing, when macOS hands it out.
     pub title: String,
     pub artist: String,
-    /// The video's link when the playing tab is a YouTube video.
+    /// The playing tab's URL; a YouTube video's normalized to its watch link.
     pub url: String,
 }
 
@@ -253,8 +253,9 @@ pub fn webkit_media_owner(name: &str) -> Option<String> {
 /// letters and digits only, ignoring case (Now Playing and the tab can differ in quotes, emoji
 /// and spacing). YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
 /// When no title matches (a Shorts tab keeps an earlier Short's title while scrolling, or the tab
-/// title lags at a video's start), the front tab `front`, if it holds a YouTube video. Any other
-/// YouTube tab open in the background is not taken: the video may play on another site.
+/// title lags at a video's start, or the site's tab title doesn't name the video), the front tab
+/// `front`, the same tab the source falls back to. A YouTube tab open in the background is not
+/// taken: the video may play on another site.
 pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str, front: Option<&'a str>) -> Option<&'a str> {
     let t = letters(title);
     if t.is_empty() {
@@ -263,7 +264,7 @@ pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str, front: Option<
     if let Some((url, _)) = tabs.iter().find(|(_, name)| letters(name).contains(&t)) {
         return Some(url);
     }
-    front.filter(|url| youtube_video(url).is_some())
+    front
 }
 
 /// Lowercased letters and digits of `s`, everything else dropped.
@@ -427,8 +428,8 @@ mod tests {
         // No title matches: the front tab, when it is a YouTube video.
         let short = "https://www.youtube.com/shorts/abcdefghi-_";
         assert_eq!(tab_playing(&tabs, "A later short", Some(short)), Some(short));
-        // The video plays on another site in front: a background YouTube tab is not taken.
-        assert_eq!(tab_playing(&tabs, "Some series - episode 2", Some("https://example.com/")), None);
+        // The video plays on another site in front: that tab, not a background YouTube tab.
+        assert_eq!(tab_playing(&tabs, "Some series - episode 2", Some("https://example.com/")), Some("https://example.com/"));
         assert_eq!(tab_playing(&tabs, "A later short", None), None);
         assert_eq!(tab_playing(&tabs, "", Some("https://www.youtube.com/shorts/abcdefghi-_")), None);
     }

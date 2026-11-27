@@ -300,7 +300,8 @@ pub fn playing() -> Option<Playing> {
         // title is the one playing. Otherwise fall back to the tab in front when playback began.
         let (title, artist) = np.as_ref().filter(|n| n.bundle == bundle).map(|n| (n.title.clone(), n.artist.clone())).unwrap_or_default();
         let tab = tab_with_title(&bundle, &title);
-        let url = tab.as_deref().and_then(usage_agent::tracker::youtube_video).unwrap_or_default();
+        // A YouTube link is normalized to its watch URL; any other site keeps the tab's own URL.
+        let url = tab.as_deref().map(|t| usage_agent::tracker::youtube_video(t).unwrap_or_else(|| t.to_owned())).unwrap_or_default();
         let source = tab
             .as_deref()
             .and_then(usage_agent::tracker::domain)
