@@ -252,10 +252,12 @@ pub fn webkit_media_owner(name: &str) -> Option<String> {
 /// The tab playing `title`: the first tab (url, tab title) whose title contains it, compared on
 /// letters and digits only, ignoring case (Now Playing and the tab can differ in quotes, emoji
 /// and spacing). YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
-/// When no title matches (a Shorts tab keeps an earlier Short's title while scrolling, or the tab
-/// title lags at a video's start, or the site's tab title doesn't name the video), the front tab
-/// `front`, the same tab the source falls back to. A YouTube tab open in the background is not
-/// taken: the video may play on another site.
+/// Next, the tab whose title starts with the most of the same words, at least two: a site's tab
+/// can name the series ("Show (2024) watch online") while Now Playing names the episode
+/// ("Show (1 season) - 5 episode").
+/// Last (a Shorts tab keeps an earlier Short's title while scrolling, or the tab title lags at a
+/// video's start), the front tab `front`, if it holds a YouTube video. Any other front tab is not
+/// taken: the video often plays in a background tab while another page is in front.
 pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str, front: Option<&'a str>) -> Option<&'a str> {
     let t = letters(title);
     if t.is_empty() {
@@ -264,7 +266,17 @@ pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str, front: Option<
     if let Some((url, _)) = tabs.iter().find(|(_, name)| letters(name).contains(&t)) {
         return Some(url);
     }
-    front
+    let tw = words(title);
+    let shared = |name: &str| words(name).iter().zip(&tw).take_while(|(a, b)| a == b).count();
+    if let Some((_, url)) = tabs.iter().map(|(url, name)| (shared(name), url)).filter(|(n, _)| *n >= 2).max_by_key(|(n, _)| *n) {
+        return Some(url);
+    }
+    front.filter(|url| youtube_video(url).is_some())
+}
+
+/// Lowercased runs of letters and digits of `s`.
+fn words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
 }
 
 /// Lowercased letters and digits of `s`, everything else dropped.
@@ -428,8 +440,13 @@ mod tests {
         // No title matches: the front tab, when it is a YouTube video.
         let short = "https://www.youtube.com/shorts/abcdefghi-_";
         assert_eq!(tab_playing(&tabs, "A later short", Some(short)), Some(short));
-        // The video plays on another site in front: that tab, not a background YouTube tab.
-        assert_eq!(tab_playing(&tabs, "Some series - episode 2", Some("https://example.com/")), Some("https://example.com/"));
+        // Another page in front and no match: neither it nor a background YouTube tab.
+        assert_eq!(tab_playing(&tabs, "Some series - episode 2", Some("https://example.com/")), None);
+        // A site's tab names the series, Now Playing the episode: same leading words.
+        let mut site = tabs.clone();
+        site.push(("https://video.example/42-some-show.html".to_string(), "Some Show (2024) watch online".to_string()));
+        assert_eq!(tab_playing(&site, "Some show (1 season) - 5 episode", Some("https://example.com/")), Some("https://video.example/42-some-show.html"));
+        assert_eq!(tab_playing(&site, "Some other thing", None), None);
         assert_eq!(tab_playing(&tabs, "A later short", None), None);
         assert_eq!(tab_playing(&tabs, "", Some("https://www.youtube.com/shorts/abcdefghi-_")), None);
     }
