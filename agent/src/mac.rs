@@ -242,7 +242,10 @@ fn media_assertions() -> Vec<(i32, Option<String>)> {
         for a in list.iter() {
             if let Some(owner) = usage_agent::tracker::webkit_media_owner(&text(&a, "AssertName")) {
                 out.push((pid, Some(owner)));
-            } else if text(&a, "AssertType") == "PreventUserIdleDisplaySleep" {
+            } else if text(&a, "AssertType") == "PreventUserIdleDisplaySleep"
+                // Apps playing audio (Telegram) keep the Mac awake with an assertion named so.
+                || text(&a, "AssertName").to_lowercase().contains("audio playback")
+            {
                 out.push((pid, None));
             }
         }
