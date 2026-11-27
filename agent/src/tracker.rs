@@ -249,14 +249,29 @@ pub fn webkit_media_owner(name: &str) -> Option<String> {
     Some(parts[..keep].join("."))
 }
 
-/// The tab playing `title`: the first tab (url, tab title) whose title contains it, ignoring case.
-/// YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
+/// The tab playing `title`: the first tab (url, tab title) whose title contains it, compared on
+/// letters and digits only, ignoring case (Now Playing and the tab can differ in quotes, emoji
+/// and spacing). YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
+/// When no title matches (a Shorts tab keeps an earlier Short's title while scrolling, or the tab
+/// title lags at a video's start), the one tab holding a YouTube video, if there is exactly one.
 pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str) -> Option<&'a str> {
-    let t = title.trim().to_lowercase();
+    let t = letters(title);
     if t.is_empty() {
         return None;
     }
-    tabs.iter().find(|(_, name)| name.to_lowercase().contains(&t)).map(|(url, _)| url.as_str())
+    if let Some((url, _)) = tabs.iter().find(|(_, name)| letters(name).contains(&t)) {
+        return Some(url);
+    }
+    let mut videos = tabs.iter().filter(|(url, _)| youtube_video(url).is_some());
+    match (videos.next(), videos.next()) {
+        (Some((url, _)), None) => Some(url),
+        _ => None,
+    }
+}
+
+/// Lowercased letters and digits of `s`, everything else dropped.
+fn letters(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
 /// A YouTube watch, Shorts or live link as its plain https://www.youtube.com/watch?v=<id>;
@@ -401,6 +416,24 @@ mod tests {
         assert_eq!(tab_playing(&tabs, "clear as mud!! come see me"), Some("https://www.youtube.com/watch?v=1"));
         assert_eq!(tab_playing(&tabs, "something else"), None);
         assert_eq!(tab_playing(&tabs, " "), None);
+    }
+
+    #[test]
+    fn tab_playing_fallbacks() {
+        let tabs = vec![
+            ("https://example.com/".to_string(), "Example".to_string()),
+            ("https://www.youtube.com/shorts/abcdefghi-_".to_string(), "First short title - YouTube".to_string()),
+        ];
+        // Quotes and emoji differ between Now Playing and the tab title.
+        let tabs2 = vec![("https://www.youtube.com/watch?v=1".to_string(), "Im obsessed | Clip - YouTube".to_string())];
+        assert_eq!(tab_playing(&tabs2, "I\u{2019}m obsessed \u{1F62D} | Clip"), Some("https://www.youtube.com/watch?v=1"));
+        // No title matches: the only YouTube video tab.
+        assert_eq!(tab_playing(&tabs, "A later short"), Some("https://www.youtube.com/shorts/abcdefghi-_"));
+        // Two video tabs and no match: unknown.
+        let mut two = tabs.clone();
+        two.push(("https://www.youtube.com/watch?v=zzzzzzzzzzz".to_string(), "Other - YouTube".to_string()));
+        assert_eq!(tab_playing(&two, "A later short"), None);
+        assert_eq!(tab_playing(&tabs, ""), None);
     }
 
     #[test]
