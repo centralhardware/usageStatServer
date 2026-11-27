@@ -2,7 +2,7 @@
 -- row is re-inserted with the end of the last one; ReplacingMergeTree(stop_at) keeps the longer.
 -- V35 then drops the later rows, which now lie inside it. The 1-hour block cuts (no gap) stay.
 INSERT INTO mac_media
-SELECT * REPLACE (x.last AS stop_at)
+SELECT m.* REPLACE (x.last AS stop_at)
 FROM mac_media AS m FINAL
 INNER JOIN (
     SELECT device_id AS d, user_name AS u, min(start_at) AS first, max(stop_at) AS last
