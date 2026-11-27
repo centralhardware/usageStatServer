@@ -42,6 +42,7 @@ pub const MIGRATIONS: &[(u32, &str, &str)] = &[
     (34, "merge_split_media_plays", include_str!("../migrations/V34__merge_split_media_plays.sql")),
     (35, "drop_merged_media_rows", include_str!("../migrations/V35__drop_merged_media_rows.sql")),
     (36, "drop_short_untitled_media", include_str!("../migrations/V36__drop_short_untitled_media.sql")),
+    (39, "title_rules_new_apps", include_str!("../migrations/V39__title_rules_new_apps.sql")),
 ];
 
 #[derive(clickhouse::Row, serde::Deserialize)]
