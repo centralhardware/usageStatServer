@@ -253,8 +253,9 @@ pub fn webkit_media_owner(name: &str) -> Option<String> {
 /// letters and digits only, ignoring case (Now Playing and the tab can differ in quotes, emoji
 /// and spacing). YouTube tabs read "<video title> - YouTube", Netflix shows the series, and so on.
 /// When no title matches (a Shorts tab keeps an earlier Short's title while scrolling, or the tab
-/// title lags at a video's start), the one tab holding a YouTube video, if there is exactly one.
-pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str) -> Option<&'a str> {
+/// title lags at a video's start), the front tab `front`, if it holds a YouTube video. Any other
+/// YouTube tab open in the background is not taken: the video may play on another site.
+pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str, front: Option<&'a str>) -> Option<&'a str> {
     let t = letters(title);
     if t.is_empty() {
         return None;
@@ -262,11 +263,7 @@ pub fn tab_playing<'a>(tabs: &'a [(String, String)], title: &str) -> Option<&'a 
     if let Some((url, _)) = tabs.iter().find(|(_, name)| letters(name).contains(&t)) {
         return Some(url);
     }
-    let mut videos = tabs.iter().filter(|(url, _)| youtube_video(url).is_some());
-    match (videos.next(), videos.next()) {
-        (Some((url, _)), None) => Some(url),
-        _ => None,
-    }
+    front.filter(|url| youtube_video(url).is_some())
 }
 
 /// Lowercased letters and digits of `s`, everything else dropped.
@@ -413,9 +410,9 @@ mod tests {
             ("https://github.com/x".to_string(), "centralhardware/usageStatServer".to_string()),
             ("https://www.youtube.com/watch?v=1".to_string(), "Clear as mud!! Come see me - YouTube".to_string()),
         ];
-        assert_eq!(tab_playing(&tabs, "clear as mud!! come see me"), Some("https://www.youtube.com/watch?v=1"));
-        assert_eq!(tab_playing(&tabs, "something else"), None);
-        assert_eq!(tab_playing(&tabs, " "), None);
+        assert_eq!(tab_playing(&tabs, "clear as mud!! come see me", None), Some("https://www.youtube.com/watch?v=1"));
+        assert_eq!(tab_playing(&tabs, "something else", None), None);
+        assert_eq!(tab_playing(&tabs, " ", None), None);
     }
 
     #[test]
@@ -426,14 +423,14 @@ mod tests {
         ];
         // Quotes and emoji differ between Now Playing and the tab title.
         let tabs2 = vec![("https://www.youtube.com/watch?v=1".to_string(), "Im obsessed | Clip - YouTube".to_string())];
-        assert_eq!(tab_playing(&tabs2, "I\u{2019}m obsessed \u{1F62D} | Clip"), Some("https://www.youtube.com/watch?v=1"));
-        // No title matches: the only YouTube video tab.
-        assert_eq!(tab_playing(&tabs, "A later short"), Some("https://www.youtube.com/shorts/abcdefghi-_"));
-        // Two video tabs and no match: unknown.
-        let mut two = tabs.clone();
-        two.push(("https://www.youtube.com/watch?v=zzzzzzzzzzz".to_string(), "Other - YouTube".to_string()));
-        assert_eq!(tab_playing(&two, "A later short"), None);
-        assert_eq!(tab_playing(&tabs, ""), None);
+        assert_eq!(tab_playing(&tabs2, "I\u{2019}m obsessed \u{1F62D} | Clip", None), Some("https://www.youtube.com/watch?v=1"));
+        // No title matches: the front tab, when it is a YouTube video.
+        let short = "https://www.youtube.com/shorts/abcdefghi-_";
+        assert_eq!(tab_playing(&tabs, "A later short", Some(short)), Some(short));
+        // The video plays on another site in front: a background YouTube tab is not taken.
+        assert_eq!(tab_playing(&tabs, "Some series - episode 2", Some("https://example.com/")), None);
+        assert_eq!(tab_playing(&tabs, "A later short", None), None);
+        assert_eq!(tab_playing(&tabs, "", Some("https://www.youtube.com/shorts/abcdefghi-_")), None);
     }
 
     #[test]
