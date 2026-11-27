@@ -101,7 +101,7 @@ impl UsageRepository {
         self.client
             .query(
                 "SELECT DISTINCT extract(url, 'v=([A-Za-z0-9_-]{11})') AS id FROM mac_media \
-                 WHERE id != '' AND id NOT IN (SELECT video_id FROM youtube_videos)",
+                 WHERE domainWithoutWWW(url) IN ('youtube.com', 'm.youtube.com', 'music.youtube.com') AND id != '' AND id NOT IN (SELECT video_id FROM youtube_videos)",
             )
             .fetch_all()
             .await
