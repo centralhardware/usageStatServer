@@ -155,7 +155,7 @@ impl Tracker {
     }
 }
 
-/// What is playing video right now: the app and where the video comes from.
+/// What is playing right now (video, or audio Now Playing reports): the app and where it comes from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Playing {
     pub bundle_id: String,

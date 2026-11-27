@@ -242,7 +242,10 @@ fn media_assertions() -> Vec<(i32, Option<String>)> {
         for a in list.iter() {
             if let Some(owner) = usage_agent::tracker::webkit_media_owner(&text(&a, "AssertName")) {
                 out.push((pid, Some(owner)));
-            } else if text(&a, "AssertType") == "PreventUserIdleDisplaySleep" {
+            } else if text(&a, "AssertType") == "PreventUserIdleDisplaySleep"
+                // Apps playing audio (Telegram) keep the Mac awake with an assertion named so.
+                || text(&a, "AssertName").to_lowercase().contains("audio playback")
+            {
                 out.push((pid, None));
             }
         }
@@ -323,9 +326,40 @@ pub fn playing() -> Option<Playing> {
             .unwrap_or_else(|| name.clone());
         return Some(Playing { bundle_id: bundle, app_name: name, source, title, artist, url });
     }
+    // Audio alone (a Telegram voice message, a song) holds no assertion: Now Playing, asked every
+    // AUDIO_POLL, tells whether an app plays and what.
+    if let Some(p) = audio_playing() {
+        return Some(p);
+    }
     PLAYING_SOURCE.with_borrow_mut(|v| *v = None);
     TITLE_SOURCE.with_borrow_mut(|v| *v = None);
     None
+}
+
+/// How often Now Playing is asked while no app holds a media assertion; the media tracker's
+/// grace period bridges the samples in between.
+const AUDIO_POLL: Duration = Duration::from_secs(5);
+
+/// What Now Playing says plays, for audio no power assertion reveals; the last answer is reused
+/// between polls.
+fn audio_playing() -> Option<Playing> {
+    use objc2_app_kit::NSRunningApplication;
+    if let Some(p) = LAST_AUDIO.with_borrow(|v| v.as_ref().filter(|(at, _)| at.elapsed() < AUDIO_POLL).map(|(_, p)| p.clone())) {
+        return p;
+    }
+    let found = now_playing().filter(|n| n.playing && !n.bundle.is_empty()).map(|n| {
+        let bundle = tab_url_script_owner(&n.bundle).unwrap_or(n.bundle);
+        let name = NSRunningApplication::runningApplicationsWithBundleIdentifier(&objc2_foundation::NSString::from_str(&bundle))
+            .firstObject()
+            .and_then(|a| a.localizedName())
+            .map_or_else(|| bundle.clone(), |n| n.to_string());
+        let tab = tab_with_title(&bundle, &n.title);
+        let url = tab.as_deref().map(|t| usage_agent::tracker::youtube_video(t).unwrap_or_else(|| t.to_owned())).unwrap_or_default();
+        let source = tab.as_deref().and_then(usage_agent::tracker::domain).unwrap_or_else(|| name.clone());
+        Playing { bundle_id: bundle, app_name: name, source, title: n.title, artist: n.artist, url }
+    });
+    LAST_AUDIO.with_borrow_mut(|v| *v = Some((std::time::Instant::now(), found.clone())));
+    found
 }
 
 /// The playing tab's domain. Browsers don't say which tab plays, so it is the front tab when
@@ -372,6 +406,7 @@ impl<K> Lookup<K> {
 
 thread_local! {
     static LAST_PRIVATE: std::cell::RefCell<(String, bool)> = Default::default();
+    static LAST_AUDIO: std::cell::RefCell<Option<(std::time::Instant, Option<Playing>)>> = const { std::cell::RefCell::new(None) };
     static PLAYING_SOURCE: std::cell::RefCell<Option<Lookup<String>>> = const { std::cell::RefCell::new(None) };
     static TITLE_SOURCE: std::cell::RefCell<Option<Lookup<(String, String)>>> = const { std::cell::RefCell::new(None) };
     static CATEGORIES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
